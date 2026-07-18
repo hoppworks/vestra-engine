@@ -93,6 +93,18 @@ pub enum EngineError {
     /// `cam_token.len()`.
     #[error("camera token dimension mismatch: expected {expected} (cam.bb0.weight input dim), got {got}")]
     CamTokenDimMismatch { expected: usize, got: usize },
+    /// Wraps a GGUF-level read/parse failure (bad magic, unsupported dtype,
+    /// out-of-bounds tensor data, missing tensor, ...) encountered while
+    /// opening a model file or bulk-loading its tensors — see
+    /// `engine.rs::weights_from_gguf`/`Engine::load`.
+    #[error("gguf error: {0}")]
+    Gguf(#[from] da_gguf::GgufError),
+    /// `Engine::infer` needs at least one out-layer to select a `cam_token`
+    /// for pose regression (`BackboneOutputs::cam_tokens`'s LAST entry, by
+    /// construction the deepest/final out-layer). A `ModelConfig` with an
+    /// empty `out_layers` (malformed GGUF metadata) can't produce one.
+    #[error("model config has empty out_layers; cannot select a camera-pose token")]
+    EmptyOutLayers,
 }
 
 /// Model hyperparameters and preprocessing config read from `depthanything3.*` GGUF metadata.

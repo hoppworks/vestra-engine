@@ -1,6 +1,7 @@
 mod backbone;
 mod config;
 mod dpt_head;
+mod engine;
 mod patch_embed;
 mod pos_embed;
 mod pose;
@@ -11,6 +12,7 @@ mod vit_block;
 pub use backbone::{Backbone, BackboneOutputs, CAMERA_TOKEN_WEIGHT, VIT_NORM_BIAS, VIT_NORM_WEIGHT};
 pub use config::{EngineError, ModelConfig};
 pub use dpt_head::{dpt_head, dpt_head_debug, DepthOut, DptDebug, HEAD_NORM_EPS};
+pub use engine::{weights_from_gguf, Engine, InferOut, QuantPref};
 pub use patch_embed::{patch_embed, PATCH_EMBED_BIAS, PATCH_EMBED_WEIGHT};
 pub use pos_embed::{
     prepare_tokens, PosEmbedCache, CLS_TOKEN_WEIGHT, POS_EMBED_WEIGHT, REGISTER_TOKENS_WEIGHT,
