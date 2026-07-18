@@ -438,28 +438,80 @@ mod tests {
 
     #[test]
     fn test_q8_0_non_aligned_element_count_rejected() {
+        use std::io::Write;
+        use std::fs::File;
+
         // Regression test: verify that Q8_0 tensors with element counts not divisible by QK8_0 (32)
-        // are rejected with a Malformed error before attempting to dequantize.
-        // Without this check, a tensor with n=33 would:
-        //   - In debug builds: panic on debug_assert_eq!(out.len(), blocks.len() * 32)
-        //   - In release builds: silently corrupt data (leaves garbage in the last element)
+        // are rejected with GgufError::Malformed before attempting to dequantize.
+        //
+        // Without this check, a tensor with n=33 elements would:
+        //   - In debug builds: panic in dequantize_q8_0 at debug_assert_eq!(out.len(), blocks.len() * QK8_0)
+        //   - In release builds: silently corrupt data (misaligned slice in dequantize loop)
+        //
+        // This test constructs a minimal in-memory GGUF file with one Q8_0 tensor declaring
+        // 33 elements (not a multiple of 32), writes it to a temp file, opens it, and calls
+        // tensor_f32("misaligned") to verify it rejects the misaligned count.
 
-        // We test this by constructing a TensorInfo and checking that the divisibility check occurs.
-        // This is a unit test focused on the validation logic itself.
+        let mut buf = Vec::new();
 
-        // For a concrete scenario: n=33, QK8_0=32 → nblocks=1 (truncated), but out.len()=33 != 32
-        let n_misaligned = 33usize;
-        let qk8_0 = 32usize;
+        // GGUF header: magic + version
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&2u32.to_le_bytes()); // version 2
 
-        // Verify the check would fail:
-        assert_ne!(n_misaligned % qk8_0, 0, "Test setup: n should not be divisible by QK8_0");
+        // tensor_count = 1, kv_count = 0
+        buf.extend_from_slice(&1u64.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
 
-        // The actual check in tensor_f32 and tensor_q8_0:
-        let is_aligned = n_misaligned % qk8_0 == 0;
-        assert!(!is_aligned, "33 % 32 should be non-zero, indicating misalignment");
+        // Tensor info record: Q8_0 tensor named "misaligned" with shape [33]
+        let tensor_name = "misaligned";
+        buf.extend_from_slice(&(tensor_name.len() as u64).to_le_bytes());
+        buf.extend_from_slice(tensor_name.as_bytes());
 
-        // Also verify the correct case:
-        let n_aligned = 32usize;
-        assert_eq!(n_aligned % qk8_0, 0, "32 should be perfectly aligned to QK8_0");
+        // n_dims = 1
+        buf.extend_from_slice(&1u32.to_le_bytes());
+
+        // dims[0] = 33 (deliberately misaligned; not a multiple of QK8_0=32)
+        buf.extend_from_slice(&33u64.to_le_bytes());
+
+        // dtype = 8 (GGML_Q8_0)
+        buf.extend_from_slice(&8u32.to_le_bytes());
+
+        // offset in data block = 0
+        buf.extend_from_slice(&0u64.to_le_bytes());
+
+        // Padding to alignment boundary (default 32 bytes)
+        let pad = (32 - (buf.len() % 32)) % 32;
+        buf.extend_from_slice(&vec![0u8; pad]);
+
+        // Data block: provide some bytes (even though we'll error before reading them)
+        // For 33 elements at Q8_0, we'd need ceil(33/32)*34 = 2*34 = 68 bytes
+        buf.extend_from_slice(&vec![0u8; 68]);
+
+        // Write buffer to temp file and open it
+        let temp_path = std::env::temp_dir().join("test_q8_0_misaligned.gguf");
+        let mut file = File::create(&temp_path).expect("create temp file");
+        file.write_all(&buf).expect("write temp file");
+        drop(file); // Close the file handle before opening it again
+
+        // Open the GGUF file and attempt to read the misaligned Q8_0 tensor
+        let gguf = GgufFile::open(&temp_path).expect("GgufFile::open should succeed");
+        let result = gguf.tensor_f32("misaligned");
+
+        // Clean up temp file
+        let _ = std::fs::remove_file(&temp_path);
+
+        // Verify that tensor_f32 correctly rejects the misaligned element count with Malformed error
+        match result {
+            Err(GgufError::Malformed(msg)) => {
+                // Expected: error message should indicate the block size check failed
+                assert!(
+                    msg.contains("not a multiple of block size"),
+                    "error should mention block size check, got: {}",
+                    msg
+                );
+            }
+            Ok(_) => panic!("tensor_f32 should reject misaligned Q8_0, but returned Ok"),
+            Err(e) => panic!("tensor_f32 should return Err(GgufError::Malformed), got: {:?}", e),
+        }
     }
 }
