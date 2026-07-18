@@ -25,9 +25,12 @@ impl Kernels {
     /// q8_0 GEMM kernel (Task 9) needs VNNI's `_mm512_dpbusd_epi32`, and
     /// gating the whole tier on all three keeps `Kernels` dispatch a single
     /// two-way branch per kernel instead of tracking per-feature subsets.
-    /// gelu/add (Task 8) only need F, but since they run on real AVX-512F+
-    /// hardware that also has BW (BW has shipped alongside F on every
-    /// AVX-512 CPU since Skylake-X), this is not expected to regress them.
+    ///
+    /// **Tradeoff**: gelu/add (Task 8) only need F, but will fall back to
+    /// AVX2/scalar on AVX-512F/BW-capable CPUs without VNNI (e.g. original
+    /// Skylake-X/Skylake-SP from 2017). VNNI shipped starting with Cascade
+    /// Lake (2019). This unified gate is an accepted simplification (single
+    /// dispatch tier vs. per-kernel feature detection), not an oversight.
     pub fn detect() -> Kernels {
         #[cfg(target_arch = "x86_64")]
         {
