@@ -73,6 +73,7 @@ fn preprocess_matches_reference_input_image() {
         alt_start: -1,
         cat_token: true,
         cam_dim_in: 8,
+        head_pos_embed: true,
     };
 
     let mut out = Vec::new();

@@ -43,6 +43,14 @@ mod keys {
     pub const IMG_RESIZE_MODE: &str = "depthanything3.img.resize_mode";
     pub const HEAD_FEATURES: &str = "depthanything3.head.features";
     pub const HEAD_MAX_DEPTH: &str = "depthanything3.head.max_depth";
+    /// Whether the DPT head adds a UV positional embedding at each
+    /// projection stage and after the final upsample. Confirmed against
+    /// `include/da_gguf_keys.h` (`DA_KV_HEAD_POS_EMBED =
+    /// "depthanything3.head.pos_embed"`) and `../src/model_loader.cpp`
+    /// (`cfg_.head_pos_embed = kv_bool(gguf_, DA_KV_HEAD_POS_EMBED, true)`,
+    /// default `true` on the non-metric-DPT loader path this workspace
+    /// targets).
+    pub const HEAD_POS_EMBED: &str = "depthanything3.head.pos_embed";
     pub const CAM_DIM_IN: &str = "depthanything3.cam.dim_in";
 }
 
@@ -64,6 +72,11 @@ const DEFAULT_ALT_START: i32 = -1;
 /// `true` (doubled-width feat/cam). Matches `../src/model_loader.cpp`'s
 /// `kv_bool(..., true)` default.
 const DEFAULT_CAT_TOKEN: bool = true;
+
+/// Default `head_pos_embed` when `depthanything3.head.pos_embed` is absent:
+/// `true` (UV pos-embed added). Matches `../src/model_loader.cpp`'s
+/// `kv_bool(..., true)` default — see `keys::HEAD_POS_EMBED`'s doc comment.
+const DEFAULT_HEAD_POS_EMBED: bool = true;
 
 #[derive(thiserror::Error, Debug)]
 pub enum EngineError {
@@ -109,6 +122,9 @@ pub struct ModelConfig {
     pub cat_token: bool,
     pub head_features: u32,
     pub head_max_depth: f32,
+    /// Whether the DPT head adds a UV positional embedding — see
+    /// `keys::HEAD_POS_EMBED`'s doc comment for provenance/default.
+    pub head_pos_embed: bool,
     pub img_mean: [f32; 3],
     pub img_std: [f32; 3],
     pub img_resize_mode: String,
@@ -176,6 +192,7 @@ impl ModelConfig {
             cat_token: f.meta_bool(keys::VIT_CAT_TOKEN).unwrap_or(DEFAULT_CAT_TOKEN),
             head_features: req_u32(f, keys::HEAD_FEATURES)?,
             head_max_depth: req_f32(f, keys::HEAD_MAX_DEPTH)?,
+            head_pos_embed: f.meta_bool(keys::HEAD_POS_EMBED).unwrap_or(DEFAULT_HEAD_POS_EMBED),
             img_mean: req_vec3(f, keys::IMG_MEAN)?,
             img_std: req_vec3(f, keys::IMG_STD)?,
             img_resize_mode: req_str(f, keys::IMG_RESIZE_MODE)?,
@@ -334,6 +351,15 @@ mod tests {
         assert_eq!(cfg.cam_dim_in, 8);
         assert_eq!(cfg.alt_start, -1);
         assert_eq!(cfg.cat_token, true);
+        assert_eq!(cfg.head_pos_embed, true);
+    }
+
+    #[test]
+    fn head_pos_embed_defaults_to_true_when_key_absent() {
+        // full_valid_entries() never includes `depthanything3.head.pos_embed`.
+        let g = build_gguf(&full_valid_entries());
+        let cfg = ModelConfig::from_gguf(&g).expect("should parse valid config");
+        assert_eq!(cfg.head_pos_embed, true);
     }
 
     #[test]

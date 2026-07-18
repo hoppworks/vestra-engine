@@ -277,6 +277,7 @@ mod tests {
             img_std: [1.0, 1.0, 1.0],
             img_resize_mode: "bilinear".to_string(),
             cam_dim_in: 1,
+            head_pos_embed: true,
         }
     }
 

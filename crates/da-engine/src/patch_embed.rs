@@ -132,6 +132,7 @@ mod tests {
             alt_start: -1,
             cat_token: true,
             cam_dim_in: 1,
+            head_pos_embed: true,
         }
     }
 
