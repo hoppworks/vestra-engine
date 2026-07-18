@@ -2,6 +2,7 @@ use std::path::Path;
 use memmap2::Mmap;
 use half::f16;
 use crate::meta::MetaValue;
+use crate::q8_0::{self, TensorQ8_0, QK8_0};
 
 #[derive(thiserror::Error, Debug)]
 pub enum GgufError {
@@ -233,9 +234,41 @@ impl GgufFile {
                 bytes[base..end].chunks_exact(2)
                     .map(|c| f16::from_le_bytes(c.try_into().unwrap()).to_f32()).collect()
             }
+            GGML_Q8_0 => {
+                let nblocks = n / QK8_0;
+                let end = base + nblocks * 34;
+                if end > bytes.len() {
+                    return Err(GgufError::Malformed(format!(
+                        "tensor '{}' data out of bounds: [{}, {}) exceeds file size {}",
+                        name, base, end, bytes.len()
+                    )));
+                }
+                let blocks = q8_0::read_blocks(&bytes[base..end], n);
+                let mut data = vec![0f32; n];
+                q8_0::dequantize_q8_0(&blocks, &mut data);
+                data
+            }
             other => return Err(GgufError::UnsupportedDtype(other)),
         };
         Ok(TensorF32 { name: name.to_string(), shape, data })
+    }
+
+    pub fn tensor_q8_0(&self, name: &str) -> Result<TensorQ8_0, GgufError> {
+        let ti = self.info(name)?;
+        let shape: Vec<i64> = ti.dims.iter().rev().map(|&d| d as i64).collect();
+        let n: usize = ti.dims.iter().map(|&d| d as usize).product();
+        let base = self.data_start + ti.offset as usize;
+        let bytes = self.raw();
+        let nblocks = n / QK8_0;
+        let end = base + nblocks * 34;
+        if end > bytes.len() {
+            return Err(GgufError::Malformed(format!(
+                "tensor '{}' data out of bounds: [{}, {}) exceeds file size {}",
+                name, base, end, bytes.len()
+            )));
+        }
+        let blocks = q8_0::read_blocks(&bytes[base..end], n);
+        Ok(TensorQ8_0 { shape, blocks })
     }
 }
 
