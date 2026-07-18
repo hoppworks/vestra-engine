@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 da-gguf = { path = "../da-gguf" }
 da-kernels = { path = "../da-kernels" }
+da-graph = { path = "../da-graph" }
 thiserror.workspace = true
 
 [dev-dependencies]
