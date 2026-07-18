@@ -9,6 +9,44 @@ pub fn gemm_f32(m: usize, n: usize, k: usize, a: &[f32], b: &[f32], c: &mut [f32
     }
 }
 
+/// q8_0 x q8_0 -> f32 GEMM: A is `m x k` and B is `n x k`, both stored as
+/// row-major q8_0 blocks (`k/QK8_0` blocks per row; B's rows are the *n*
+/// columns of the logical `k x n` matrix, i.e. B is pre-transposed into
+/// row blocks the same way A is). This is the scalar oracle: every other
+/// backend (AVX-512/VNNI) must match this within the test's tolerance band.
+pub fn gemm_q8_0(
+    m: usize,
+    n: usize,
+    k: usize,
+    a_q: &[da_gguf::BlockQ8_0],
+    b_q: &[da_gguf::BlockQ8_0],
+    c: &mut [f32],
+) {
+    debug_assert_eq!(k % da_gguf::QK8_0, 0, "k must be a multiple of QK8_0");
+    let blocks_per_row = k / da_gguf::QK8_0;
+    debug_assert_eq!(a_q.len(), m * blocks_per_row);
+    debug_assert_eq!(b_q.len(), n * blocks_per_row);
+    debug_assert_eq!(c.len(), m * n);
+
+    for i in 0..m {
+        let a_row = &a_q[i * blocks_per_row..(i + 1) * blocks_per_row];
+        for j in 0..n {
+            let b_row = &b_q[j * blocks_per_row..(j + 1) * blocks_per_row];
+            let mut acc = 0f32;
+            for bi in 0..blocks_per_row {
+                let ab = &a_row[bi];
+                let bb = &b_row[bi];
+                let mut isum: i32 = 0;
+                for l in 0..da_gguf::QK8_0 {
+                    isum += ab.qs[l] as i32 * bb.qs[l] as i32;
+                }
+                acc += ab.d.to_f32() * bb.d.to_f32() * isum as f32;
+            }
+            c[i * n + j] = acc;
+        }
+    }
+}
+
 pub fn add(dst: &mut [f32], src: &[f32]) {
     debug_assert_eq!(dst.len(), src.len());
     for i in 0..dst.len() { dst[i] += src[i]; }

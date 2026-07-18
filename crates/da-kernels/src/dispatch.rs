@@ -19,10 +19,22 @@ impl Kernels {
     /// (e.g. this development machine, aarch64/Apple Silicon) this always
     /// returns `Isa::Scalar`, since `is_x86_feature_detected!` and the
     /// AVX-512/AVX2 kernels only exist on `target_arch = "x86_64"`.
+    ///
+    /// `Isa::Avx512` is a single unified tier gated on AVX-512F **and**
+    /// AVX-512BW **and** AVX-512VNNI all being present (not just F): the
+    /// q8_0 GEMM kernel (Task 9) needs VNNI's `_mm512_dpbusd_epi32`, and
+    /// gating the whole tier on all three keeps `Kernels` dispatch a single
+    /// two-way branch per kernel instead of tracking per-feature subsets.
+    /// gelu/add (Task 8) only need F, but since they run on real AVX-512F+
+    /// hardware that also has BW (BW has shipped alongside F on every
+    /// AVX-512 CPU since Skylake-X), this is not expected to regress them.
     pub fn detect() -> Kernels {
         #[cfg(target_arch = "x86_64")]
         {
-            if std::is_x86_feature_detected!("avx512f") {
+            if std::is_x86_feature_detected!("avx512f")
+                && std::is_x86_feature_detected!("avx512bw")
+                && std::is_x86_feature_detected!("avx512vnni")
+            {
                 return Kernels { isa: Isa::Avx512 };
             }
             if std::is_x86_feature_detected!("avx2") {
@@ -53,6 +65,28 @@ impl Kernels {
             #[cfg(target_arch = "x86_64")]
             Isa::Avx512 => unsafe { crate::simd_avx512::add_avx512(dst, src) },
             _ => crate::scalar::add(dst, src),
+        }
+    }
+
+    /// q8_0 x q8_0 -> f32 GEMM (Task 9). `a_q` is `m x k`, `b_q` is `n x k`
+    /// (i.e. B is pre-transposed into row-major q8_0 blocks the same way A
+    /// is), both as `k/QK8_0` blocks per row; `c` is `m x n`. Result must be
+    /// within the test's tolerance band of `scalar::gemm_q8_0` run against
+    /// the f32-dequantized operands. See `scalar::gemm_q8_0` for the oracle
+    /// this must match.
+    pub fn gemm_q8_0(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a_q: &[da_gguf::BlockQ8_0],
+        b_q: &[da_gguf::BlockQ8_0],
+        c: &mut [f32],
+    ) {
+        match self.isa {
+            #[cfg(target_arch = "x86_64")]
+            Isa::Avx512 => unsafe { crate::simd_avx512::gemm_q8_0_avx512(m, n, k, a_q, b_q, c) },
+            _ => crate::scalar::gemm_q8_0(m, n, k, a_q, b_q, c),
         }
     }
 }
