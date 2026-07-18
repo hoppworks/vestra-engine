@@ -1,0 +1,18 @@
+[package]
+name = "da-kernels"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+da-gguf = { path = "../da-gguf" }
+faer.workspace = true
+half.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+da-parity = { path = "../../da-parity" }
+
+[[bench]]
+name = "gemm_bench"
+harness = false
