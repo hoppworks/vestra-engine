@@ -69,7 +69,7 @@ pub fn layernorm(x: &mut [f32], rows: usize, cols: usize, gamma: &[f32], beta: &
 }
 
 pub fn gelu(x: &mut [f32]) {
-    const INV_SQRT2: f32 = 0.707_106_78;
+    const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;
     for v in x.iter_mut() { *v = 0.5 * *v * (1.0 + erf(*v * INV_SQRT2)); }
 }
 

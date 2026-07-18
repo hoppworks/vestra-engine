@@ -291,7 +291,7 @@ mod tests {
         let mut weight = vec![0f32; in_c * out_c * kh * kw];
         // ic0->oc0: all ones (16 elems)
         for i in 0..16 {
-            weight[(0 * out_c + 0) * 16 + i] = 1.0;
+            weight[i] = 1.0;
         }
         // ic0->oc1: all zeros (default)
         // ic1->oc0: all zeros
