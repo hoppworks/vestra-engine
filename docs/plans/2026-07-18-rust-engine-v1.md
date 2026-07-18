@@ -64,12 +64,12 @@ Expected: entweder `true`, oder Ausgabe „Initialized empty Git repository".
 [workspace]
 resolver = "2"
 members = [
-    "crates/da-gguf",
-    "crates/da-kernels",
-    "crates/da-graph",
-    "crates/da-engine",
-    "crates/da-cli",
-    "da-parity",
+    # NUR bereits existierende Crates. Cargo löst den gesamten `members`-Baum
+    # auf, bevor irgendein Befehl läuft (auch `cargo metadata --no-deps`) —
+    # ein fehlendes Member-Verzeichnis lässt JEDEN cargo-Aufruf fehlschlagen,
+    # nicht nur den für das fehlende Crate. Deshalb: Mitgliedschaft wächst
+    # inkrementell. Jede Task, die eine neue Crate anlegt (1, 2, 5, 12, 14,
+    # 21), fügt deren Pfad als Teil ihres eigenen Diffs hier hinzu.
 ]
 
 [workspace.package]
@@ -130,7 +130,7 @@ Parity is gated against the C++ repo's reference dumps in `../dumps/` (read-only
 Run: `cd depth-anything-rs && cargo metadata --no-deps --format-version 1 >/dev/null && echo OK`
 Expected: `OK` (Member existieren noch nicht → wir legen sie in Folgetasks an; falls `cargo metadata` über fehlende Member meckert, ist das erwartet bis Task 1).
 
-Hinweis: Wenn `cargo metadata` fehlende Member-Verzeichnisse bemängelt, ist das bis Task 1 erwartet — der Workspace wird erst mit dem ersten realen Crate baubar. Dieser Step verifiziert nur, dass die TOML syntaktisch gültig ist (`cargo metadata` parst sie, bevor es Member auflöst).
+Hinweis: `members` startet leer (siehe Kommentar im TOML oben). Dieser Step verifiziert nur, dass die TOML syntaktisch gültig ist. **Workspace-Mitgliedschaft wächst inkrementell:** jede Task, die eine neue Crate anlegt (1, 2, 5, 12, 14, 21), fügt deren Pfad zu `members` in `depth-anything-rs/Cargo.toml` als Teil ihres eigenen Commits hinzu — sonst löst kein `cargo`-Befehl im Workspace mehr auf, sobald irgendein gelisteter Member-Pfad fehlt. Commits werden ausschließlich mit expliziten Pfaden erstellt (`git add -- <pfad>`), nie mit `-A`/`-u`/`.` — der Git-Root ist das C++-Repo, ein breiter Add reißt dessen kompletten Baum mit hinein.
 
 - [ ] **Step 5: Commit**
 
@@ -737,6 +737,7 @@ Jeder SIMD-Kernel wird später gegen seinen skalaren Zwilling getestet. Diese Ta
 - Create: `depth-anything-rs/crates/da-kernels/src/lib.rs`
 - Create: `depth-anything-rs/crates/da-kernels/src/scalar.rs`
 - Test: `depth-anything-rs/crates/da-kernels/tests/scalar_ops.rs`
+- Modify: `depth-anything-rs/Cargo.toml` — `"crates/da-kernels"` zu `members` hinzufügen (Workspace-Mitgliedschaft wächst inkrementell, siehe Task 0).
 
 **Interfaces:**
 - Produces (alle im Modul `scalar`, freie Funktionen über Slices):
@@ -1359,6 +1360,7 @@ git commit -m "feat(da-kernels): conv2d/conv_transpose2d via im2col+gemm and bil
 - Create: `depth-anything-rs/crates/da-graph/src/tensor.rs`
 - Create: `depth-anything-rs/crates/da-graph/src/arena.rs`
 - Test: `depth-anything-rs/crates/da-graph/tests/arena_reuse.rs`
+- Modify: `depth-anything-rs/Cargo.toml` — `"crates/da-graph"` zu `members` hinzufügen.
 
 **Interfaces:**
 - Produces:
@@ -1435,6 +1437,7 @@ fn linear_gelu_graph_matches_manual() {
 - Create: `depth-anything-rs/crates/da-engine/src/lib.rs`
 - Create: `depth-anything-rs/crates/da-engine/src/config.rs`
 - Test: `depth-anything-rs/crates/da-engine/tests/config_from_model.rs`
+- Modify: `depth-anything-rs/Cargo.toml` — `"crates/da-engine"` zu `members` hinzufügen.
 
 **Interfaces:**
 - Consumes: `da_gguf::GgufFile`.
@@ -1572,6 +1575,7 @@ fn linear_gelu_graph_matches_manual() {
 - Create: `depth-anything-rs/crates/da-cli/src/main.rs`
 - Create: `depth-anything-rs/crates/da-cli/src/infer.rs`
 - Test: `depth-anything-rs/crates/da-cli/tests/cli_smoke.rs`
+- Modify: `depth-anything-rs/Cargo.toml` — `"crates/da-cli"` zu `members` hinzufügen (letztes Member — Workspace ist damit vollständig).
 
 **Interfaces:**
 - Produces: Binary `da` mit `da infer --model <gguf> --image <png> --out-depth <pfm|png> --out-pose <json>`. Pose-JSON: `{ "extrinsics": [[..]], "intrinsics": [[..]] }`.
