@@ -63,6 +63,43 @@ pub enum QuantPref {
 /// Bulk-loads every tensor in `f` into a fresh [`Weights`] map, keyed by its
 /// GGUF tensor name, dequantized to `f32` via [`GgufFile::tensor_f32`]
 /// regardless of `_prefer` — see this module's doc comment for why.
+///
+/// ## Rank-2 tensors are transposed on load (the Critical fix this doc block
+/// documents)
+///
+/// `vit_block.rs`'s and `pose.rs`'s "Linear-weight orientation" doc comments
+/// both require every linear-layer weight (`vit.blk.{i}.attn_qkv.weight`,
+/// `attn_proj.weight`, `mlp_fc1.weight`, `mlp_fc2.weight`, and
+/// `cam.bb0/bb2/fc_t/fc_q/fc_fov.weight`) to be stored `[in_features,
+/// out_features]` — the transpose of GGUF/PyTorch's native `nn.Linear.weight`
+/// layout, `[out_features, in_features]`. This function transposes every
+/// **rank-2** tensor (`t.shape.len() == 2`) unconditionally on load.
+///
+/// This was checked to be safe (not just convenient) for every tensor name
+/// that actually appears in this codebase's GGUFs, per
+/// `../scripts/convert_da3_to_gguf.py`: every tensor is written via
+/// `np.ascontiguousarray(param.numpy())` with no reshape/squeeze, so each
+/// GGUF tensor's rank is exactly its source `nn.Parameter`'s rank.
+/// - The genuine 2-D `nn.Linear.weight` params above are the only rank-2
+///   tensors in this model: verified by grepping every `run_linear`/
+///   `linear_vec` call site in `vit_block.rs`/`pose.rs`.
+/// - Conv weights (`vit.patch_embed.weight`, `head.proj.*.weight`,
+///   `head.scratch.*.weight`, including the 1x1 `rn{i}.out.weight`) come from
+///   `nn.Conv2d` params, which PyTorch always shapes `[out_c, in_c, kh, kw]`
+///   (rank 4 even for a 1x1 kernel — no squeeze anywhere in the converter),
+///   so they're untouched by the rank-2 check and keep GGUF's native
+///   `[out_c, in_c, kh, kw]` order, which is exactly what
+///   `da_kernels::conv::conv2d`'s `weight` parameter expects.
+/// - `vit.pos_embed`, `vit.cls_token`, `vit.register_tokens`,
+///   `vit.camera_token` are DINOv2-style `nn.Parameter`s with a leading
+///   batch/singleton dim (e.g. `pos_embed = nn.Parameter(torch.zeros(1, rows,
+///   embed_dim))` — confirmed by `convert_da3_to_gguf.py`'s
+///   `bb.pos_embed.shape[1]` access, which only makes sense if dim 0 is a
+///   size-1 batch axis), so their GGUF rank is 3, not 2 — also untouched.
+///   These are embedding-table-style lookups (indexed by row), NOT
+///   matrix-multiply weights, so transposing them would be wrong; it's
+///   fortunate but verified, not assumed, that their rank already excludes
+///   them from this function's rank-2 transpose.
 pub fn weights_from_gguf(f: &GgufFile, _prefer: QuantPref) -> Result<Weights, EngineError> {
     let mut weights = Weights::new();
     // Collect names first: `tensor_f32` borrows `f` immutably (fine to
@@ -71,9 +108,31 @@ pub fn weights_from_gguf(f: &GgufFile, _prefer: QuantPref) -> Result<Weights, En
     let names: Vec<String> = f.tensor_names().map(|n| n.to_string()).collect();
     for name in names {
         let t = f.tensor_f32(&name)?;
-        weights.insert_f32(name, t.data);
+        let data = if t.shape.len() == 2 {
+            transpose_2d(&t.data, t.shape[0] as usize, t.shape[1] as usize)
+        } else {
+            t.data
+        };
+        weights.insert_f32(name, data);
     }
     Ok(weights)
+}
+
+/// Transposes a `[rows, cols]` row-major buffer into a `[cols, rows]`
+/// row-major buffer: `out[c*rows + r] = in[r*cols + c]`. Used by
+/// [`weights_from_gguf`] to convert GGUF's native `[out_features,
+/// in_features]` linear-weight layout into the `[in_features,
+/// out_features]` layout `da_graph::Op::Gemm` (and therefore
+/// `vit_block::run_linear`/`pose::linear_vec`) require.
+fn transpose_2d(data: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    debug_assert_eq!(data.len(), rows * cols, "transpose_2d: data length must equal rows*cols");
+    let mut out = vec![0f32; rows * cols];
+    for r in 0..rows {
+        for c in 0..cols {
+            out[c * rows + r] = data[r * cols + c];
+        }
+    }
+    out
 }
 
 /// Final output of [`Engine::infer`]: dense depth + confidence maps at the
@@ -189,5 +248,102 @@ impl Engine {
             extrinsics: pose_out.extrinsics,
             intrinsics: pose_out.intrinsics,
         })
+    }
+}
+
+#[cfg(test)]
+mod weights_from_gguf_tests {
+    use super::*;
+
+    /// Minimal binary GGUF writer, just enough to round-trip through
+    /// `GgufFile::open` (magic, version, KV section (empty here), one
+    /// tensor-info entry with a real multi-dim shape, alignment padding,
+    /// then the tensor's `f32` data block) — mirrors the pattern already
+    /// used by `tests/e2e_native.rs`'s `GgufBuilder`, but supports an
+    /// arbitrary-rank shape (that test helper hardcodes rank 1) since this
+    /// regression test's whole point is exercising the rank-2 transpose
+    /// path in `weights_from_gguf`.
+    fn write_minimal_gguf(path: &std::path::Path, tensor_name: &str, shape: &[u64], data: &[f32]) {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&2u32.to_le_bytes()); // version
+        buf.extend_from_slice(&1u64.to_le_bytes()); // tensor_count
+        buf.extend_from_slice(&0u64.to_le_bytes()); // kv_count
+
+        // Tensor-info section: name, n_dims, dims (inner->outer per
+        // `GgufFile::tensor_f32`'s "dims sind inner→outer gespeichert, also
+        // umdrehen" comment, so we write `shape` reversed), dtype (0 = F32),
+        // offset (0, the only tensor).
+        buf.extend_from_slice(&(tensor_name.len() as u64).to_le_bytes());
+        buf.extend_from_slice(tensor_name.as_bytes());
+        buf.extend_from_slice(&(shape.len() as u32).to_le_bytes());
+        for &d in shape.iter().rev() {
+            buf.extend_from_slice(&d.to_le_bytes());
+        }
+        buf.extend_from_slice(&0u32.to_le_bytes()); // dtype = F32
+        buf.extend_from_slice(&0u64.to_le_bytes()); // offset
+
+        let pad = (32 - (buf.len() % 32)) % 32;
+        buf.extend_from_slice(&vec![0u8; pad]);
+        for v in data {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+
+        std::fs::write(path, &buf).expect("write temp gguf");
+    }
+
+    /// Regression test for Critical finding C1: `weights_from_gguf` must
+    /// transpose every rank-2 tensor from GGUF's native `[rows, cols]`
+    /// (`[out_features, in_features]` for a real linear weight) into
+    /// `[cols, rows]` on load. Constructs a minimal synthetic GGUF holding
+    /// one known 2x3 tensor (`[[1,2,3],[4,5,6]]`) and asserts the loaded
+    /// `Weights` buffer equals its 3x2 transpose, `[1,4,2,5,3,6]`
+    /// flattened row-major — exactly the cheap, no-real-model-required
+    /// regression guard the final reviewer asked for.
+    #[test]
+    fn weights_from_gguf_transposes_rank2_tensors() {
+        let counter = std::sync::atomic::AtomicU64::new(0);
+        let n = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "da_engine_weights_from_gguf_transpose_test_{}_{}.gguf",
+            std::process::id(),
+            n
+        ));
+
+        let data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // [[1,2,3],[4,5,6]], row-major [2,3]
+        write_minimal_gguf(&path, "some.linear.weight", &[2, 3], &data);
+
+        let f = GgufFile::open(&path).expect("open synthetic gguf");
+        let weights = weights_from_gguf(&f, QuantPref::PreferF32).expect("weights_from_gguf");
+        let got = weights.get_f32("some.linear.weight").expect("tensor present");
+
+        assert_eq!(got, &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0][..], "rank-2 tensor must be transposed [2,3] -> [3,2] on load");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Companion assertion: a rank-1 tensor (e.g. a bias or LayerNorm gamma)
+    /// must pass through `weights_from_gguf` unmodified — only rank-2
+    /// tensors are transposed.
+    #[test]
+    fn weights_from_gguf_leaves_rank1_tensors_unmodified() {
+        let counter = std::sync::atomic::AtomicU64::new(0);
+        let n = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "da_engine_weights_from_gguf_rank1_test_{}_{}.gguf",
+            std::process::id(),
+            n
+        ));
+
+        let data = vec![10.0f32, 20.0, 30.0];
+        write_minimal_gguf(&path, "some.bias", &[3], &data);
+
+        let f = GgufFile::open(&path).expect("open synthetic gguf");
+        let weights = weights_from_gguf(&f, QuantPref::PreferF32).expect("weights_from_gguf");
+        let got = weights.get_f32("some.bias").expect("tensor present");
+
+        assert_eq!(got, &data[..], "rank-1 tensor must be loaded unmodified");
+
+        let _ = std::fs::remove_file(&path);
     }
 }
