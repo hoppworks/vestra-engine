@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/da-gguf",
     "crates/da-kernels",
+    "crates/da-graph",
     "da-parity",
 ]
 
