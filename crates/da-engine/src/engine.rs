@@ -118,6 +118,10 @@ impl Engine {
     pub fn load(path: &Path, quant_prefer: QuantPref) -> Result<Engine, EngineError> {
         let f = GgufFile::open(path)?;
         let cfg = ModelConfig::from_gguf(&f)?;
+        // Verify that out_layers is strictly ascending — the invariant that
+        // `Engine::infer`'s `.last()` call relies on to select the deepest
+        // (final) transformer layer's cam_token for pose regression.
+        debug_assert!(cfg.out_layers.windows(2).all(|w| w[0] < w[1]), "out_layers must be strictly ascending, got {:?}", cfg.out_layers);
         let weights = weights_from_gguf(&f, quant_prefer)?;
         Ok(Engine {
             cfg,
@@ -167,6 +171,10 @@ impl Engine {
 
         let depth_out = dpt_head::dpt_head(&bb_out.feats, ph, pw, &self.cfg, &self.weights, &mut self.uv_cache);
 
+        // Select the camera token from the LAST (deepest) out-layer for pose regression.
+        // This relies on the invariant that `cfg.out_layers` is strictly ascending
+        // (so the last entry is the deepest/final layer) — defended by the `debug_assert!`
+        // in `Engine::load`.
         let last_cam = bb_out
             .cam_tokens
             .last()
