@@ -15,6 +15,16 @@ use crate::Plan;
 /// `da_kernels` functions they'll dispatch to) so `CpuBackend::execute` can
 /// already handle them, but they're only exercised by later milestones'
 /// parity tests.
+/// Precomputed 2D-RoPE inputs for [`Op::Attention`]: `pos_yx` is a
+/// `TensorId` of `n*2` f32-encoded `(y, x)` integer grid positions (row-major
+/// per token, matching `da_kernels::rope2d`'s `pos_yx` argument once cast
+/// back to `i64`), and `freq` is the rotation base.
+#[derive(Debug, Clone, Copy)]
+pub struct RopeParams {
+    pub pos_yx: TensorId,
+    pub freq: f32,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Op {
     /// `out[m,n] = a[m,k] @ b[k,n]`.
@@ -45,9 +55,41 @@ pub enum Op {
         cols: usize,
         eps: f32,
     },
-    /// Scaled-dot-product attention. `q`,`k`,`v` and `out` are
+    /// In-place per-column scale (LayerScale / DINOv2 `ls1`/`ls2`):
+    /// `x[r,c] *= gamma[c]`, mirroring `AddBias`'s shape convention.
+    /// Wraps `da_kernels::scalar::layerscale`.
+    LayerScale {
+        x: TensorId,
+        gamma: TensorId,
+        rows: usize,
+        cols: usize,
+    },
+    /// Scaled-dot-product attention, revised (Task 17) to also cover the two
+    /// ViT-block traps that live *inside* attention rather than around it:
+    /// per-head QK-LayerNorm and 2D-RoPE. `q`,`k`,`v` and `out` are
     /// `[heads, n, head_dim]` row-major, matching
-    /// `da_kernels::attention::attention`.
+    /// `da_kernels::attention::attention` — `q`/`k` are the *raw*
+    /// (pre-norm, pre-RoPE) projections; `CpuBackend::execute` mutates them
+    /// in place (qk-norm, then RoPE, both optional) before running the
+    /// softmax(QK^T/sqrt(d))V core into `out`.
+    ///
+    /// `qnorm`/`knorm`, when `Some`, are `(gamma, beta)` `TensorId` pairs of
+    /// length `head_dim`, applied as a LayerNorm over each `(head, token)`
+    /// row of `q`/`k` (i.e. `rows = heads*n, cols = head_dim`) at
+    /// `qk_norm_eps` — a distinct epsilon from any block-level LayerNorm's
+    /// `eps`, because the reference model's per-head q_norm/k_norm are
+    /// constructed with torch's *default* `nn.LayerNorm` eps (`1e-5`), not
+    /// the block's `ln_eps` (see `src/vit_block.cpp`'s "reference parity
+    /// note" comment: `QK_NORM_EPS = 1e-5f`, distinct from `ln_eps=1e-6`).
+    /// Only present (`Some`) when the model both has qn/kn weight tensors
+    /// *and* the calling layer index is `>= cfg.qknorm_start`.
+    ///
+    /// `rope`, when `Some`, carries precomputed per-token `(y, x)` integer
+    /// grid positions (as a `TensorId` of `n*2` f32-encoded values — the
+    /// arena only stores `f32`; values are exact for any realistic token
+    /// count) plus the rotation base `freq`, applied via
+    /// `da_kernels::rope2d` after qk-norm. Only present when the calling
+    /// layer index is `>= cfg.rope_start`.
     Attention {
         q: TensorId,
         k: TensorId,
@@ -55,6 +97,10 @@ pub enum Op {
         heads: usize,
         n: usize,
         head_dim: usize,
+        qnorm: Option<(TensorId, TensorId)>,
+        knorm: Option<(TensorId, TensorId)>,
+        qk_norm_eps: f32,
+        rope: Option<RopeParams>,
         out: TensorId,
     },
     /// Standard NCHW (batch=1) Conv2d via im2col+GEMM, matching
@@ -96,13 +142,35 @@ impl Op {
                 f(g);
                 f(b);
             }
+            Op::LayerScale { x, gamma, .. } => {
+                f(x);
+                f(gamma);
+            }
             Op::Attention {
-                q, k, v, out, ..
+                q,
+                k,
+                v,
+                out,
+                qnorm,
+                knorm,
+                rope,
+                ..
             } => {
                 f(q);
                 f(k);
                 f(v);
                 f(out);
+                if let Some((g, b)) = qnorm {
+                    f(g);
+                    f(b);
+                }
+                if let Some((g, b)) = knorm {
+                    f(g);
+                    f(b);
+                }
+                if let Some(RopeParams { pos_yx, .. }) = rope {
+                    f(pos_yx);
+                }
             }
             Op::Conv2d {
                 input,
@@ -281,7 +349,14 @@ impl GraphBuilder {
         x
     }
 
-    #[allow(clippy::too_many_arguments)]
+    pub fn layer_scale(&mut self, x: TensorId, gamma: TensorId, rows: usize, cols: usize) -> TensorId {
+        self.ops.push(Op::LayerScale { x, gamma, rows, cols });
+        x
+    }
+
+    /// Plain scaled-dot-product attention: no qk-norm, no RoPE. Equivalent
+    /// to `attention_full(q, k, v, heads, n, head_dim, None, None, qk_norm_eps, None)`
+    /// for any `qk_norm_eps` (unused when both norms are `None`).
     pub fn attention(
         &mut self,
         q: TensorId,
@@ -291,6 +366,28 @@ impl GraphBuilder {
         n: usize,
         head_dim: usize,
     ) -> TensorId {
+        self.attention_full(q, k, v, heads, n, head_dim, None, None, 1e-5, None)
+    }
+
+    /// Full attention op: optional per-head QK-LayerNorm (`qnorm`/`knorm`,
+    /// each `(gamma, beta)` of length `head_dim`, applied at `qk_norm_eps`)
+    /// and optional 2D-RoPE (`rope`), both applied to `q`/`k` in place before
+    /// the softmax(QK^T/sqrt(d))V core. See [`Op::Attention`]'s doc comment
+    /// for the full contract.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attention_full(
+        &mut self,
+        q: TensorId,
+        k: TensorId,
+        v: TensorId,
+        heads: usize,
+        n: usize,
+        head_dim: usize,
+        qnorm: Option<(TensorId, TensorId)>,
+        knorm: Option<(TensorId, TensorId)>,
+        qk_norm_eps: f32,
+        rope: Option<RopeParams>,
+    ) -> TensorId {
         let out = self.alloc(heads * n * head_dim);
         self.ops.push(Op::Attention {
             q,
@@ -299,6 +396,10 @@ impl GraphBuilder {
             heads,
             n,
             head_dim,
+            qnorm,
+            knorm,
+            qk_norm_eps,
+            rope,
             out,
         });
         out

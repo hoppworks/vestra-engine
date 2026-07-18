@@ -36,3 +36,12 @@ fn layernorm_zero_mean_unit_var() {
     let mean: f32 = x.iter().sum::<f32>()/4.0;
     assert!(mean.abs() < 1e-4);
 }
+
+#[test]
+fn layerscale_scales_each_column_broadcast_over_rows() {
+    // 2 rows, 3 cols.
+    let mut x = [1., 2., 3., 4., 5., 6.];
+    let gamma = [10.0, -1.0, 0.5];
+    layerscale(&mut x, 2, 3, &gamma);
+    assert_eq!(x, [10.0, -2.0, 1.5, 40.0, -5.0, 3.0]);
+}

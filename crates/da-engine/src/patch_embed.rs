@@ -123,6 +123,7 @@ mod tests {
             rope_freq: 100.0,
             ln_eps: 1e-6,
             out_layers: vec![0],
+            ffn_type: "mlp".to_string(),
             head_features: 1,
             head_max_depth: 1.0,
             img_mean: [0.0, 0.0, 0.0],

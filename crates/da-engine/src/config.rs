@@ -17,6 +17,12 @@ mod keys {
     pub const VIT_ROPE_FREQ: &str = "depthanything3.vit.rope_freq";
     pub const VIT_LN_EPS: &str = "depthanything3.vit.ln_eps";
     pub const VIT_OUT_LAYERS: &str = "depthanything3.vit.out_layers";
+    /// FFN flavor: `"mlp"` (classic fc1/fc2, DA3-BASE) or `"swiglu"` (giant
+    /// models only). Confirmed against `../scripts/gguf_keys.py` /
+    /// `../scripts/convert_da3_to_gguf.py` (`w.add_string(K.KV["vit.ffn_type"], ...)`,
+    /// always written by the real converter) and `../src/vit_block.cpp`'s
+    /// `load_block` (`w.swiglu = (ml.config().ffn_type == "swiglu")`).
+    pub const VIT_FFN_TYPE: &str = "depthanything3.vit.ffn_type";
     pub const IMG_MEAN: &str = "depthanything3.img.mean";
     pub const IMG_STD: &str = "depthanything3.img.std";
     pub const IMG_RESIZE_MODE: &str = "depthanything3.img.resize_mode";
@@ -26,6 +32,13 @@ mod keys {
 }
 
 const EXPECTED_ARCH: &str = "depthanything3";
+
+/// Default `ffn_type` when `depthanything3.vit.ffn_type` is absent from the
+/// GGUF metadata. The real converter always writes this key, but a defensive
+/// default keeps `ModelConfig::from_gguf` working against older/hand-built
+/// files (matching `../src/model_loader.cpp`'s general "kv with default"
+/// pattern used for other optional keys like `interp_offset`).
+const DEFAULT_FFN_TYPE: &str = "mlp";
 
 #[derive(thiserror::Error, Debug)]
 pub enum EngineError {
@@ -54,6 +67,10 @@ pub struct ModelConfig {
     pub rope_freq: f32,
     pub ln_eps: f32,
     pub out_layers: Vec<i32>,
+    /// `"mlp"` (default, when the GGUF key is absent) or `"swiglu"`. Only
+    /// the `"mlp"` path is implemented by `vit_block` (Task 17); `"swiglu"`
+    /// is a deliberate, honest not-yet-supported hard error there.
+    pub ffn_type: String,
     pub head_features: u32,
     pub head_max_depth: f32,
     pub img_mean: [f32; 3],
@@ -116,6 +133,9 @@ impl ModelConfig {
             rope_freq: req_f32(f, keys::VIT_ROPE_FREQ)?,
             ln_eps: req_f32(f, keys::VIT_LN_EPS)?,
             out_layers: req_arr_i32(f, keys::VIT_OUT_LAYERS)?,
+            ffn_type: f
+                .meta_str(keys::VIT_FFN_TYPE)
+                .unwrap_or_else(|| DEFAULT_FFN_TYPE.to_string()),
             head_features: req_u32(f, keys::HEAD_FEATURES)?,
             head_max_depth: req_f32(f, keys::HEAD_MAX_DEPTH)?,
             img_mean: req_vec3(f, keys::IMG_MEAN)?,
@@ -267,6 +287,7 @@ mod tests {
         assert_eq!(cfg.rope_freq, 100.0);
         assert_eq!(cfg.ln_eps, 1e-6);
         assert_eq!(cfg.out_layers, vec![2, 5, 8, 11]);
+        assert_eq!(cfg.ffn_type, "mlp");
         assert_eq!(cfg.head_features, 256);
         assert_eq!(cfg.head_max_depth, 20.0);
         assert_eq!(cfg.img_mean, [0.485, 0.456, 0.406]);
@@ -297,6 +318,23 @@ mod tests {
             Err(EngineError::UnsupportedModel(None)) => {}
             other => panic!("expected UnsupportedModel(None), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ffn_type_defaults_to_mlp_when_key_absent() {
+        // full_valid_entries() never includes `depthanything3.vit.ffn_type`.
+        let g = build_gguf(&full_valid_entries());
+        let cfg = ModelConfig::from_gguf(&g).expect("should parse valid config");
+        assert_eq!(cfg.ffn_type, "mlp");
+    }
+
+    #[test]
+    fn ffn_type_explicit_swiglu_round_trips() {
+        let mut entries = full_valid_entries();
+        entries.push(Kv::Str("depthanything3.vit.ffn_type", "swiglu"));
+        let g = build_gguf(&entries);
+        let cfg = ModelConfig::from_gguf(&g).expect("should parse valid config");
+        assert_eq!(cfg.ffn_type, "swiglu");
     }
 
     #[test]

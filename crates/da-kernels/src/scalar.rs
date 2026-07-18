@@ -81,6 +81,19 @@ fn erf(x: f32) -> f32 {
     s * y
 }
 
+/// In-place per-column ("LayerScale") scale: `x[r,c] *= gamma[c]`. Mirrors
+/// `add_bias_rows`'s shape convention exactly (row-major `[rows, cols]`,
+/// one scale factor per column, broadcast over rows).
+pub fn layerscale(x: &mut [f32], rows: usize, cols: usize, gamma: &[f32]) {
+    debug_assert_eq!(x.len(), rows * cols);
+    debug_assert_eq!(gamma.len(), cols);
+    for r in 0..rows {
+        for c in 0..cols {
+            x[r * cols + c] *= gamma[c];
+        }
+    }
+}
+
 pub fn softmax_rows(x: &mut [f32], rows: usize, cols: usize) {
     debug_assert_eq!(x.len(), rows*cols);
     for r in 0..rows {

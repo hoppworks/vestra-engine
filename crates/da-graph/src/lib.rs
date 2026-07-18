@@ -7,5 +7,5 @@ pub mod tensor;
 pub use arena::Arena;
 pub use backend::{Backend, Plan};
 pub use cpu_backend::CpuBackend;
-pub use graph::{Graph, GraphBuilder, Op, Weights};
+pub use graph::{Graph, GraphBuilder, Op, RopeParams, Weights};
 pub use tensor::{Shape, TensorId};

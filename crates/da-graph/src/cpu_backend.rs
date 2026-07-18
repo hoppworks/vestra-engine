@@ -2,7 +2,7 @@ use da_kernels::gemm::{FaerGemm, Gemm};
 use da_kernels::Kernels;
 
 use crate::backend::Backend;
-use crate::graph::{Op, Weights};
+use crate::graph::{Op, RopeParams, Weights};
 use crate::tensor::TensorId;
 use crate::Arena;
 
@@ -171,6 +171,20 @@ impl Backend for CpuBackend {
                 let b_slice = unsafe { std::slice::from_raw_parts(b_ptr, b_len) };
                 da_kernels::scalar::layernorm(x_slice, rows, cols, g_slice, b_slice, eps);
             }
+            Op::LayerScale { x, gamma, rows, cols } => {
+                #[cfg(debug_assertions)]
+                assert_disjoint_or_shared_read(&[
+                    ("x", arena.range(x).0, arena.range(x).1, true),
+                    ("gamma", arena.range(gamma).0, arena.range(gamma).1, false),
+                ]);
+                let (x_ptr, x_len) = raw_parts(arena, x);
+                let (gamma_ptr, gamma_len) = raw_parts(arena, gamma);
+                // SAFETY: see `raw_parts` doc comment (verified above by
+                // `assert_disjoint_or_shared_read` in debug builds).
+                let x_slice = unsafe { std::slice::from_raw_parts_mut(x_ptr, x_len) };
+                let gamma_slice = unsafe { std::slice::from_raw_parts(gamma_ptr, gamma_len) };
+                da_kernels::scalar::layerscale(x_slice, rows, cols, gamma_slice);
+            }
             Op::Attention {
                 q,
                 k,
@@ -178,25 +192,77 @@ impl Backend for CpuBackend {
                 heads,
                 n,
                 head_dim,
+                qnorm,
+                knorm,
+                qk_norm_eps,
+                rope,
                 out,
             } => {
+                // q/k are mutated in place (qk-norm, then RoPE) before the
+                // softmax(QK^T/sqrt(d))V core reads them — both are marked
+                // as write targets below, not read-only, even though a
+                // caller with qnorm=None/rope=None wouldn't actually touch
+                // them; this keeps the aliasing contract simple and
+                // conservative rather than mode-dependent.
                 #[cfg(debug_assertions)]
-                assert_disjoint_or_shared_read(&[
-                    ("q", arena.range(q).0, arena.range(q).1, false),
-                    ("k", arena.range(k).0, arena.range(k).1, false),
-                    ("v", arena.range(v).0, arena.range(v).1, false),
-                    ("out", arena.range(out).0, arena.range(out).1, true),
-                ]);
+                {
+                    let mut ranges = vec![
+                        ("q", arena.range(q).0, arena.range(q).1, true),
+                        ("k", arena.range(k).0, arena.range(k).1, true),
+                        ("v", arena.range(v).0, arena.range(v).1, false),
+                        ("out", arena.range(out).0, arena.range(out).1, true),
+                    ];
+                    if let Some((g, b)) = qnorm {
+                        ranges.push(("qnorm_g", arena.range(g).0, arena.range(g).1, false));
+                        ranges.push(("qnorm_b", arena.range(b).0, arena.range(b).1, false));
+                    }
+                    if let Some((g, b)) = knorm {
+                        ranges.push(("knorm_g", arena.range(g).0, arena.range(g).1, false));
+                        ranges.push(("knorm_b", arena.range(b).0, arena.range(b).1, false));
+                    }
+                    if let Some(RopeParams { pos_yx, .. }) = rope {
+                        ranges.push(("pos_yx", arena.range(pos_yx).0, arena.range(pos_yx).1, false));
+                    }
+                    assert_disjoint_or_shared_read(&ranges);
+                }
                 let (q_ptr, q_len) = raw_parts(arena, q);
                 let (k_ptr, k_len) = raw_parts(arena, k);
                 let (v_ptr, v_len) = raw_parts(arena, v);
                 let (out_ptr, out_len) = raw_parts(arena, out);
+                let qnorm_raw = qnorm.map(|(g, b)| (raw_parts(arena, g), raw_parts(arena, b)));
+                let knorm_raw = knorm.map(|(g, b)| (raw_parts(arena, g), raw_parts(arena, b)));
+                let rope_raw = rope.map(|RopeParams { pos_yx, freq }| (raw_parts(arena, pos_yx), freq));
                 // SAFETY: see `raw_parts` doc comment (verified above by
                 // `assert_disjoint_or_shared_read` in debug builds).
-                let q_slice = unsafe { std::slice::from_raw_parts(q_ptr, q_len) };
-                let k_slice = unsafe { std::slice::from_raw_parts(k_ptr, k_len) };
+                let q_slice = unsafe { std::slice::from_raw_parts_mut(q_ptr, q_len) };
+                let k_slice = unsafe { std::slice::from_raw_parts_mut(k_ptr, k_len) };
                 let v_slice = unsafe { std::slice::from_raw_parts(v_ptr, v_len) };
                 let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr, out_len) };
+
+                if let Some(((g_ptr, g_len), (b_ptr, b_len))) = qnorm_raw {
+                    let g_slice = unsafe { std::slice::from_raw_parts(g_ptr, g_len) };
+                    let b_slice = unsafe { std::slice::from_raw_parts(b_ptr, b_len) };
+                    // Per (head, token) row of length head_dim — NOT the full
+                    // embed_dim — at the torch-default eps (qk_norm_eps),
+                    // distinct from any block-level LayerNorm's eps. This is
+                    // trap #1/#2 from Task 17's brief.
+                    da_kernels::scalar::layernorm(q_slice, heads * n, head_dim, g_slice, b_slice, qk_norm_eps);
+                }
+                if let Some(((g_ptr, g_len), (b_ptr, b_len))) = knorm_raw {
+                    let g_slice = unsafe { std::slice::from_raw_parts(g_ptr, g_len) };
+                    let b_slice = unsafe { std::slice::from_raw_parts(b_ptr, b_len) };
+                    da_kernels::scalar::layernorm(k_slice, heads * n, head_dim, g_slice, b_slice, qk_norm_eps);
+                }
+                if let Some(((pos_ptr, pos_len), freq)) = rope_raw {
+                    let pos_slice = unsafe { std::slice::from_raw_parts(pos_ptr, pos_len) };
+                    // Positions are stored as f32 in the arena (which only
+                    // holds f32) but are always integer-valued; round-trip
+                    // through i64 for `da_kernels::rope2d`'s signature.
+                    let pos_yx_i64: Vec<i64> = pos_slice.iter().map(|&v| v.round() as i64).collect();
+                    da_kernels::rope2d(q_slice, heads, n, head_dim, &pos_yx_i64, freq);
+                    da_kernels::rope2d(k_slice, heads, n, head_dim, &pos_yx_i64, freq);
+                }
+
                 da_kernels::attention(q_slice, k_slice, v_slice, heads, n, head_dim, out_slice);
             }
             Op::Conv2d {
