@@ -146,6 +146,7 @@ fn run_attention(
     n: usize,
     gh: usize,
     gw: usize,
+    global: bool,
     cfg: &ModelConfig,
     layer_idx: usize,
     weights: &Weights,
@@ -194,24 +195,31 @@ fn run_attention(
         cfg.qknorm_start >= 0 && (layer_idx as i32) >= cfg.qknorm_start && weights.get_f32(&qn_w).is_some();
     let use_rope = cfg.rope_start >= 0 && (layer_idx as i32) >= cfg.rope_start;
 
-    // RoPE positions: special tokens (CLS + registers) get (0,0); patch
-    // token `idx` (row-major over the (gh,gw) grid) gets (row+1, col+1) —
-    // 1-indexed, reserving (0,0) for the special tokens. Confirmed against
-    // `../src/dino_backbone.cpp`'s `pos_local` construction (the RoPE
-    // position set actually used by every block for DA3-BASE, since that
-    // model has no `alt_start`/global-attention path — see `vit_block.rs`
-    // module doc and Task 17's report for the parts of the real forward
-    // pass, e.g. camera-token swapping, this module intentionally does not
-    // implement).
+    // RoPE positions: special tokens (CLS + registers) always get (0,0).
+    // Patch token `idx` (row-major over the (gh,gw) grid) gets:
+    //   - `global == false` ("local" set): (row+1, col+1), 1-indexed,
+    //     reserving (0,0) for the special tokens.
+    //   - `global == true` ("nodiff" set): (1,1) for EVERY patch — every
+    //     position collapses to the same value, i.e. RoPE contributes no
+    //     positional differentiation for global/cross-view attention layers.
+    // Confirmed against `../src/dino_backbone.cpp`'s `pos_local`/`pos_nodiff`
+    // construction. The caller (`Backbone::forward`) decides `global` per
+    // layer (`cfg.alt_start>=0 && i>=cfg.alt_start && i%2==1`); this function
+    // never inspects `cfg.alt_start` itself.
     let n_special = 1 + cfg.num_register as usize;
     let pos_yx: Vec<f32> = if use_rope {
         let mut p = vec![0f32; n * 2];
         for t in n_special..n.min(n_special + gh * gw) {
-            let idx = t - n_special;
-            let row = idx / gw;
-            let col = idx % gw;
-            p[2 * t] = (row + 1) as f32;
-            p[2 * t + 1] = (col + 1) as f32;
+            if global {
+                p[2 * t] = 1.0;
+                p[2 * t + 1] = 1.0;
+            } else {
+                let idx = t - n_special;
+                let row = idx / gw;
+                let col = idx % gw;
+                p[2 * t] = (row + 1) as f32;
+                p[2 * t + 1] = (col + 1) as f32;
+            }
         }
         p
     } else {
@@ -286,17 +294,28 @@ fn run_attention(
 /// patch-grid resolution) are only consulted when this layer uses RoPE
 /// (`layer_idx >= cfg.rope_start`).
 ///
+/// `global` selects which of the two RoPE position sets this layer's
+/// attention uses when RoPE is active (see `run_attention`'s doc comment):
+/// `false` = "local" (per-patch positions), `true` = "nodiff" (every patch
+/// treated as position `(1,1)`). The CALLER decides `global` (typically
+/// `cfg.alt_start>=0 && layer_idx>=cfg.alt_start && layer_idx%2==1`,
+/// matching `../src/dino_backbone.cpp`'s alternation) — this function does
+/// not consult `cfg.alt_start` itself, keeping the block math oblivious to
+/// which layer index it's running at.
+///
 /// # Panics
 /// - If `tokens.len() != n * cfg.embed_dim`.
 /// - If `cfg.ffn_type == "swiglu"`: a deliberate, honest "not yet
 ///   supported" hard error (see the module/crate-level docs) rather than
 ///   silently running the wrong FFN math. Only `"mlp"` (DA3-BASE) is
 ///   implemented by this function.
+#[allow(clippy::too_many_arguments)]
 pub fn vit_block(
     tokens: &mut [f32],
     n: usize,
     gh: usize,
     gw: usize,
+    global: bool,
     cfg: &ModelConfig,
     layer_idx: usize,
     weights: &Weights,
@@ -334,7 +353,7 @@ pub fn vit_block(
         weights,
         backend,
     );
-    let attn_out = run_attention(&ln1, n, gh, gw, cfg, layer_idx, weights, backend);
+    let attn_out = run_attention(&ln1, n, gh, gw, global, cfg, layer_idx, weights, backend);
     da_kernels::scalar::add(tokens, &attn_out);
 
     // --- MLP sub-block --- (same "tokens still holds the residual" trick)
@@ -402,6 +421,8 @@ mod tests {
             img_mean: [0.0, 0.0, 0.0],
             img_std: [1.0, 1.0, 1.0],
             img_resize_mode: "bilinear".to_string(),
+            alt_start: -1,
+            cat_token: true,
             cam_dim_in: 1,
         }
     }
@@ -454,7 +475,7 @@ mod tests {
         let mut tokens = random_vec(&mut rng, n * cfg.embed_dim as usize);
         let before = tokens.clone();
 
-        vit_block(&mut tokens, n, 2, 2, &cfg, 0, &weights, &backend);
+        vit_block(&mut tokens, n, 2, 2, false, &cfg, 0, &weights, &backend);
 
         assert_eq!(tokens.len(), before.len());
         assert_ne!(tokens, before, "a real forward pass should change token values");
@@ -479,9 +500,9 @@ mod tests {
         // between the two calls — only ls1/ls2 presence differs.
 
         let mut t_with = tokens0.clone();
-        vit_block(&mut t_with, n, 2, 2, &cfg, 0, &w_with_ls, &backend);
+        vit_block(&mut t_with, n, 2, 2, false, &cfg, 0, &w_with_ls, &backend);
         let mut t_without = tokens0.clone();
-        vit_block(&mut t_without, n, 2, 2, &cfg, 0, &w_without_ls, &backend);
+        vit_block(&mut t_without, n, 2, 2, false, &cfg, 0, &w_without_ls, &backend);
 
         assert_ne!(t_with, t_without);
     }
@@ -502,7 +523,7 @@ mod tests {
         let weights1 = synthetic_weights(&cfg, 1, true, true);
 
         let mut t_layer0 = tokens0.clone();
-        vit_block(&mut t_layer0, n, 2, 2, &cfg, 0, &weights, &backend);
+        vit_block(&mut t_layer0, n, 2, 2, false, &cfg, 0, &weights, &backend);
 
         // Manually force qknorm_start/rope_start to "always on" and rerun
         // layer 0 with the SAME weights/tokens: since layer 0 < 1, the
@@ -514,7 +535,7 @@ mod tests {
         cfg_always_on.qknorm_start = 0;
         cfg_always_on.rope_start = 0;
         let mut t_layer0_forced = tokens0.clone();
-        vit_block(&mut t_layer0_forced, n, 2, 2, &cfg_always_on, 0, &weights, &backend);
+        vit_block(&mut t_layer0_forced, n, 2, 2, false, &cfg_always_on, 0, &weights, &backend);
 
         assert_ne!(
             t_layer0, t_layer0_forced,
@@ -524,7 +545,7 @@ mod tests {
         // And layer 1 (>= qknorm_start/rope_start) really does run with
         // gating active (sanity: it must simply produce finite output).
         let mut t_layer1 = tokens0.clone();
-        vit_block(&mut t_layer1, n, 2, 2, &cfg, 1, &weights1, &backend);
+        vit_block(&mut t_layer1, n, 2, 2, false, &cfg, 1, &weights1, &backend);
         assert!(t_layer1.iter().all(|v| v.is_finite()));
     }
 
@@ -537,7 +558,7 @@ mod tests {
         let backend = CpuBackend::new();
         let n = 5usize;
         let mut tokens = vec![0f32; n * cfg.embed_dim as usize];
-        vit_block(&mut tokens, n, 2, 2, &cfg, 0, &weights, &backend);
+        vit_block(&mut tokens, n, 2, 2, false, &cfg, 0, &weights, &backend);
     }
 
     /// Deterministic, dependency-free PRNG (Xorshift32) for reproducible

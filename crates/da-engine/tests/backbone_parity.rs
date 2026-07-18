@@ -59,6 +59,16 @@ fn load_weights(g: &GgufFile, cfg: &ModelConfig) -> Weights {
     if let Some(rt) = load_1d(g, da_engine::REGISTER_TOKENS_WEIGHT) {
         w.insert_f32(da_engine::REGISTER_TOKENS_WEIGHT, rt);
     }
+    // Final vit.norm + camera_token: both required by Backbone::forward's
+    // post-process (vit.norm always) and camera-token injection (only when
+    // cfg.alt_start >= 0, but harmless to load unconditionally).
+    for name in [da_engine::VIT_NORM_WEIGHT, da_engine::VIT_NORM_BIAS] {
+        let t = g.tensor_f32(name).unwrap_or_else(|e| panic!("missing/unreadable tensor {name:?}: {e}"));
+        w.insert_f32(name, t.data);
+    }
+    if let Some(ct) = load_1d(g, da_engine::CAMERA_TOKEN_WEIGHT) {
+        w.insert_f32(da_engine::CAMERA_TOKEN_WEIGHT, ct);
+    }
 
     for i in 0..cfg.depth as usize {
         let p = |suffix: &str| format!("vit.blk.{i}.{suffix}");
@@ -105,9 +115,12 @@ fn load_weights(g: &GgufFile, cfg: &ModelConfig) -> Weights {
     w
 }
 
-/// Gates `Backbone::forward` (the full 12-layer `vit_block` stack) against
-/// the `feat_{5,7,9,11}` reference dumps — "the most important milestone of
-/// M5" per this task's brief.
+/// Gates `Backbone::forward` (the full 12-layer `vit_block` stack, plus
+/// camera-token injection / local-global alternation / final-norm
+/// doubled-width post-processing — see `da_engine::backbone`'s module doc
+/// comment) against the `feat_{5,7,9,11}` AND `cam_token_{5,7,9,11}`
+/// reference dumps — "the most important milestone of M5" per this task's
+/// brief.
 ///
 /// SKIPS (does not fail) when either `../models/da3-base-f16.gguf` or
 /// `../dumps/reference.gguf` is absent, which is the case in this
@@ -117,15 +130,18 @@ fn load_weights(g: &GgufFile, cfg: &ModelConfig) -> Weights {
 /// `vit_block`/`Backbone` forward pass is numerically UNVERIFIED against
 /// ground truth here.
 ///
-/// It is ALSO unverified against the dump *format itself*: as documented on
-/// `da_engine::backbone`'s module doc comment, the real C++ engine's `feat`
-/// output is `cat([local_x, vit_norm(x)])` (double-width channel
-/// concatenation) rather than the raw per-layer token buffer this test
-/// compares against `Backbone::forward`'s return value — so even once dumps
-/// exist, this test as written may need revision (shape mismatch would fail
-/// loudly via `assert_parity`, not silently).
+/// DA3-BASE is expected to have `cat_token == true` (confirmed against
+/// `../src/model_loader.cpp`'s default and `../scripts/dump_reference.py`'s
+/// documented `[1,256,1536]`/`[1,1536]` shapes, `1536 = 2*embed_dim=2*768`),
+/// so `feat_*` is expected `[256, 1536]` and `cam_token_*` is expected
+/// `[1536]`. If the real model turns out to have `cat_token == false`
+/// (unverified — no real GGUF read directly in this environment), the
+/// shapes below would be `[256, 768]`/`[768]` instead and this test's
+/// hardcoded `[256, 1536]` assumption documented in this comment would need
+/// updating (the `assert_parity` shape check would fail loudly, not
+/// silently, if that's the case).
 #[test]
-fn backbone_forward_matches_reference_feat_layers() {
+fn backbone_forward_matches_reference_feat_and_cam_layers() {
     let Some(model_gguf) = model() else { return };
 
     let (g, m) = (dumps_path("reference.gguf"), dumps_path("manifest.json"));
@@ -155,11 +171,15 @@ fn backbone_forward_matches_reference_feat_layers() {
     let backend = CpuBackend::new();
     let bb = Backbone::new(&cfg, &weights, &backend);
     let out_layers = [5, 7, 9, 11];
-    let feats = bb.forward(&mut tokens, gh, gw, &out_layers);
+    let out = bb.forward(&mut tokens, gh, gw, &out_layers);
 
-    for (idx, feat) in out_layers.iter().zip(feats.iter()) {
-        let dump_name = format!("feat_{idx}");
-        let expected = d.reference(&dump_name).unwrap();
-        assert_parity(feat, &expected.data, d.atol(), d.rtol(), &dump_name);
+    for (i, idx) in out_layers.iter().enumerate() {
+        let feat_dump = format!("feat_{idx}");
+        let expected_feat = d.reference(&feat_dump).unwrap();
+        assert_parity(&out.feats[i], &expected_feat.data, d.atol(), d.rtol(), &feat_dump);
+
+        let cam_dump = format!("cam_token_{idx}");
+        let expected_cam = d.reference(&cam_dump).unwrap();
+        assert_parity(&out.cam_tokens[i], &expected_cam.data, d.atol(), d.rtol(), &cam_dump);
     }
 }

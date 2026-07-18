@@ -70,6 +70,8 @@ fn preprocess_matches_reference_input_image() {
         img_mean: [0.485, 0.456, 0.406],
         img_std: [0.229, 0.224, 0.225],
         img_resize_mode: "bilinear".to_string(),
+        alt_start: -1,
+        cat_token: true,
         cam_dim_in: 8,
     };
 

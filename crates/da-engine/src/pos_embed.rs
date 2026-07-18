@@ -281,6 +281,8 @@ mod tests {
             img_mean: [0.0, 0.0, 0.0],
             img_std: [1.0, 1.0, 1.0],
             img_resize_mode: "bilinear".to_string(),
+            alt_start: -1,
+            cat_token: true,
             cam_dim_in: 1,
         }
     }

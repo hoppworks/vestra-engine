@@ -23,6 +23,21 @@ mod keys {
     /// always written by the real converter) and `../src/vit_block.cpp`'s
     /// `load_block` (`w.swiglu = (ml.config().ffn_type == "swiglu")`).
     pub const VIT_FFN_TYPE: &str = "depthanything3.vit.ffn_type";
+    /// Layer index at which camera-token injection + local/global attention
+    /// alternation begins (`-1` = never, i.e. this model has no alt path).
+    /// Confirmed against `include/da_gguf_keys.h`
+    /// (`DA_KV_VIT_ALT_START = "depthanything3.vit.alt_start"`) and
+    /// `../src/model_loader.cpp` (`kv_i32(gguf_, DA_KV_VIT_ALT_START, -1)`,
+    /// default `-1`).
+    pub const VIT_ALT_START: &str = "depthanything3.vit.alt_start";
+    /// Whether `get_intermediate_layers`-style feats double the channel
+    /// width via `cat([local_x, vit_norm(x)])` (`true`, DA3-BASE/giant) or
+    /// use the single-width `vit_norm(x)` only (`false`, da2/mono models).
+    /// Confirmed against `include/da_gguf_keys.h`
+    /// (`DA_KV_VIT_CAT_TOKEN = "depthanything3.vit.cat_token"`) and
+    /// `../src/model_loader.cpp` (`kv_bool(gguf_, DA_KV_VIT_CAT_TOKEN,
+    /// true)`, default `true`).
+    pub const VIT_CAT_TOKEN: &str = "depthanything3.vit.cat_token";
     pub const IMG_MEAN: &str = "depthanything3.img.mean";
     pub const IMG_STD: &str = "depthanything3.img.std";
     pub const IMG_RESIZE_MODE: &str = "depthanything3.img.resize_mode";
@@ -39,6 +54,16 @@ const EXPECTED_ARCH: &str = "depthanything3";
 /// files (matching `../src/model_loader.cpp`'s general "kv with default"
 /// pattern used for other optional keys like `interp_offset`).
 const DEFAULT_FFN_TYPE: &str = "mlp";
+
+/// Default `alt_start` when `depthanything3.vit.alt_start` is absent:
+/// "never" (no camera-token injection, no local/global alternation).
+/// Matches `../src/model_loader.cpp`'s `kv_i32(..., -1)` default.
+const DEFAULT_ALT_START: i32 = -1;
+
+/// Default `cat_token` when `depthanything3.vit.cat_token` is absent:
+/// `true` (doubled-width feat/cam). Matches `../src/model_loader.cpp`'s
+/// `kv_bool(..., true)` default.
+const DEFAULT_CAT_TOKEN: bool = true;
 
 #[derive(thiserror::Error, Debug)]
 pub enum EngineError {
@@ -71,6 +96,17 @@ pub struct ModelConfig {
     /// the `"mlp"` path is implemented by `vit_block` (Task 17); `"swiglu"`
     /// is a deliberate, honest not-yet-supported hard error there.
     pub ffn_type: String,
+    /// Layer index at which camera-token injection + local/global attention
+    /// alternation begins; `-1` means this model never does either (default
+    /// when `depthanything3.vit.alt_start` is absent from GGUF metadata —
+    /// see `keys::VIT_ALT_START`'s doc comment for provenance).
+    pub alt_start: i32,
+    /// Whether captured `feat`/`cam` outputs are the doubled-width
+    /// `cat([local_x, vit_norm(x)])`/`cat([local_x[tok0], x[tok0]])` form
+    /// (`true`, default when `depthanything3.vit.cat_token` is absent) or
+    /// the single-width `vit_norm(x)`/`x[tok0]` form (`false`) — see
+    /// `keys::VIT_CAT_TOKEN`'s doc comment for provenance.
+    pub cat_token: bool,
     pub head_features: u32,
     pub head_max_depth: f32,
     pub img_mean: [f32; 3],
@@ -136,6 +172,8 @@ impl ModelConfig {
             ffn_type: f
                 .meta_str(keys::VIT_FFN_TYPE)
                 .unwrap_or_else(|| DEFAULT_FFN_TYPE.to_string()),
+            alt_start: f.meta_i32(keys::VIT_ALT_START).unwrap_or(DEFAULT_ALT_START),
+            cat_token: f.meta_bool(keys::VIT_CAT_TOKEN).unwrap_or(DEFAULT_CAT_TOKEN),
             head_features: req_u32(f, keys::HEAD_FEATURES)?,
             head_max_depth: req_f32(f, keys::HEAD_MAX_DEPTH)?,
             img_mean: req_vec3(f, keys::IMG_MEAN)?,
@@ -294,6 +332,103 @@ mod tests {
         assert_eq!(cfg.img_std, [0.229, 0.224, 0.225]);
         assert_eq!(cfg.img_resize_mode, "bicubic");
         assert_eq!(cfg.cam_dim_in, 8);
+        assert_eq!(cfg.alt_start, -1);
+        assert_eq!(cfg.cat_token, true);
+    }
+
+    #[test]
+    fn alt_start_defaults_to_minus_one_when_key_absent() {
+        // full_valid_entries() never includes `depthanything3.vit.alt_start`.
+        let g = build_gguf(&full_valid_entries());
+        let cfg = ModelConfig::from_gguf(&g).expect("should parse valid config");
+        assert_eq!(cfg.alt_start, -1);
+    }
+
+    #[test]
+    fn alt_start_explicit_value_round_trips() {
+        let mut entries = full_valid_entries();
+        entries.push(Kv::I32("depthanything3.vit.alt_start", 4));
+        let g = build_gguf(&entries);
+        let cfg = ModelConfig::from_gguf(&g).expect("should parse valid config");
+        assert_eq!(cfg.alt_start, 4);
+    }
+
+    #[test]
+    fn cat_token_defaults_to_true_when_key_absent() {
+        // full_valid_entries() never includes `depthanything3.vit.cat_token`.
+        let g = build_gguf(&full_valid_entries());
+        let cfg = ModelConfig::from_gguf(&g).expect("should parse valid config");
+        assert_eq!(cfg.cat_token, true);
+    }
+
+    #[test]
+    fn cat_token_explicit_false_round_trips() {
+        // Kv has no Bool variant, so assemble the buffer directly here
+        // (mirroring build_gguf's layout) with a GGUF bool-typed KV entry.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&2u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        let base_entries = full_valid_entries();
+        buf.extend_from_slice(&((base_entries.len() + 1) as u64).to_le_bytes());
+        for e in &base_entries {
+            match e {
+                Kv::Str(k, v) => {
+                    write_kv(&mut buf, k, 8);
+                    buf.extend_from_slice(&(v.len() as u64).to_le_bytes());
+                    buf.extend_from_slice(v.as_bytes());
+                }
+                Kv::U32(k, v) => {
+                    write_kv(&mut buf, k, 4);
+                    buf.extend_from_slice(&v.to_le_bytes());
+                }
+                Kv::I32(k, v) => {
+                    write_kv(&mut buf, k, 5);
+                    buf.extend_from_slice(&v.to_le_bytes());
+                }
+                Kv::F32(k, v) => {
+                    write_kv(&mut buf, k, 6);
+                    buf.extend_from_slice(&v.to_le_bytes());
+                }
+                Kv::ArrF32(k, v) => {
+                    write_kv(&mut buf, k, 9);
+                    buf.extend_from_slice(&6u32.to_le_bytes());
+                    buf.extend_from_slice(&(v.len() as u64).to_le_bytes());
+                    for x in *v {
+                        buf.extend_from_slice(&x.to_le_bytes());
+                    }
+                }
+                Kv::ArrI32(k, v) => {
+                    write_kv(&mut buf, k, 9);
+                    buf.extend_from_slice(&5u32.to_le_bytes());
+                    buf.extend_from_slice(&(v.len() as u64).to_le_bytes());
+                    for x in *v {
+                        buf.extend_from_slice(&x.to_le_bytes());
+                    }
+                }
+            }
+        }
+        // GGUF bool vtype is 7, stored as a single byte (0/1).
+        write_kv(&mut buf, "depthanything3.vit.cat_token", 7);
+        buf.push(0u8);
+        let pad = (32 - (buf.len() % 32)) % 32;
+        buf.extend_from_slice(&vec![0u8; pad]);
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "da_engine_test_cat_token_{}_{}_{}.gguf",
+            pid, nanos, counter
+        ));
+        std::fs::write(&path, &buf).expect("write temp gguf");
+        let g = GgufFile::open(&path).expect("open temp gguf");
+        let _ = std::fs::remove_file(&path);
+
+        let cfg = ModelConfig::from_gguf(&g).expect("should parse valid config");
+        assert_eq!(cfg.cat_token, false);
     }
 
     #[test]

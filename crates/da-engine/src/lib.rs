@@ -5,7 +5,7 @@ mod pos_embed;
 mod preprocess;
 mod vit_block;
 
-pub use backbone::Backbone;
+pub use backbone::{Backbone, BackboneOutputs, CAMERA_TOKEN_WEIGHT, VIT_NORM_BIAS, VIT_NORM_WEIGHT};
 pub use config::{EngineError, ModelConfig};
 pub use patch_embed::{patch_embed, PATCH_EMBED_BIAS, PATCH_EMBED_WEIGHT};
 pub use pos_embed::{
