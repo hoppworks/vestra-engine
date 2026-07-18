@@ -241,3 +241,153 @@ impl GgufFile {
 
 // mmap ist über die Lebensdauer von GgufFile gültig; die Rohzeiger sind privat und
 // werden nur über &self dereferenziert. Send/Sync sind nicht nötig für v1.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_kv_value_unmodeled_array_skips_correctly() {
+        // Regression test for bug where unmodeled array element types (e.g., bool, u16, u64, f64)
+        // caused hard failures. After the fix, read_kv_value returns Ok(None) for unsupported but
+        // valid element types, and the cursor advances past the array bytes correctly.
+        //
+        // This test constructs a KV byte sequence with:
+        // 1. An array KV entry with unmodeled element type (bool=7) and a few elements
+        // 2. A sentinel u32 KV entry with a known value immediately after
+        //
+        // If the cursor doesn't advance correctly after skipping the unmodeled array,
+        // the sentinel parse will fail or produce wrong values.
+
+        // Build test bytes manually: two KV entries
+
+        // ===== First KV: array of bool (unmodeled, should be skipped) =====
+        // key_len: 20 bytes for "unmodeled_bool_array"
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&20u64.to_le_bytes());
+        bytes.extend_from_slice(b"unmodeled_bool_array");
+
+        // vtype: 9 (array)
+        bytes.extend_from_slice(&9u32.to_le_bytes());
+
+        // elem_type: 7 (bool)
+        bytes.extend_from_slice(&7u32.to_le_bytes());
+
+        // elem_count: 3
+        bytes.extend_from_slice(&3u64.to_le_bytes());
+
+        // elements: 3 bool values (1 byte each): true, false, true
+        bytes.push(0x01);
+        bytes.push(0x00);
+        bytes.push(0x01);
+
+        // ===== Second KV: u32 sentinel =====
+        // key_len: 8 bytes for "sentinel"
+        bytes.extend_from_slice(&8u64.to_le_bytes());
+        bytes.extend_from_slice(b"sentinel");
+
+        // vtype: 4 (u32)
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+
+        // value: 0x12345678
+        bytes.extend_from_slice(&0x12345678u32.to_le_bytes());
+
+        // ===== Parse both KV entries =====
+        let mut cursor = Cursor { b: &bytes, p: 0 };
+
+        // Parse first KV entry (unmodeled array)
+        let key1 = cursor.gguf_string().expect("read key1");
+        assert_eq!(key1, "unmodeled_bool_array");
+
+        let vtype1 = cursor.u32().expect("read vtype1");
+        assert_eq!(vtype1, 9);
+
+        // Parse the unmodeled array; should return Ok(None) and advance cursor
+        let result1 = read_kv_value(&mut cursor, vtype1);
+        assert!(result1.is_ok(), "unmodeled array should not error, got: {:?}", result1);
+        let opt_val1 = result1.expect("result is ok");
+        assert!(opt_val1.is_none(), "unmodeled array should return None");
+
+        // ===== Parse second KV entry (sentinel u32) =====
+        let key2 = cursor.gguf_string().expect("read key2");
+        assert_eq!(key2, "sentinel");
+
+        let vtype2 = cursor.u32().expect("read vtype2");
+        assert_eq!(vtype2, 4);
+
+        // Parse the sentinel u32; must produce correct value
+        let result2 = read_kv_value(&mut cursor, vtype2);
+        assert!(result2.is_ok(), "sentinel u32 should parse, got: {:?}", result2);
+        let opt_val2 = result2.expect("result is ok");
+        assert!(opt_val2.is_some(), "sentinel u32 should produce Some value");
+
+        if let Some(MetaValue::U32(val)) = opt_val2 {
+            assert_eq!(val, 0x12345678, "sentinel u32 value mismatch");
+        } else {
+            panic!("expected MetaValue::U32, got {:?}", opt_val2);
+        }
+
+        // ===== Final sanity check =====
+        // Cursor should have consumed exactly all bytes
+        assert_eq!(cursor.p, bytes.len(), "cursor should be at end of bytes");
+    }
+
+    #[test]
+    fn test_read_kv_value_array_of_u16_skips_correctly() {
+        // Additional regression test: array of u16 (type 2) should be skipped.
+        // u16 is 2 bytes per element, so 5 elements = 10 bytes to skip.
+
+        let mut bytes = Vec::new();
+
+        // ===== First KV: array of u16 (unmodeled) =====
+        bytes.extend_from_slice(&19u64.to_le_bytes()); // key_len
+        bytes.extend_from_slice(b"unmodeled_u16_array");
+
+        bytes.extend_from_slice(&9u32.to_le_bytes()); // vtype: array
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // elem_type: u16
+        bytes.extend_from_slice(&5u64.to_le_bytes()); // elem_count: 5
+
+        // 5 u16 values: 0x1111, 0x2222, 0x3333, 0x4444, 0x5555
+        bytes.extend_from_slice(&0x1111u16.to_le_bytes());
+        bytes.extend_from_slice(&0x2222u16.to_le_bytes());
+        bytes.extend_from_slice(&0x3333u16.to_le_bytes());
+        bytes.extend_from_slice(&0x4444u16.to_le_bytes());
+        bytes.extend_from_slice(&0x5555u16.to_le_bytes());
+
+        // ===== Second KV: i32 sentinel =====
+        bytes.extend_from_slice(&10u64.to_le_bytes()); // key_len
+        bytes.extend_from_slice(b"sentinel_i");
+
+        bytes.extend_from_slice(&5u32.to_le_bytes()); // vtype: i32
+        bytes.extend_from_slice(&(-42i32).to_le_bytes()); // value: -42
+
+        // Parse
+        let mut cursor = Cursor { b: &bytes, p: 0 };
+
+        let key1 = cursor.gguf_string().expect("read key1");
+        assert_eq!(key1, "unmodeled_u16_array");
+
+        let vtype1 = cursor.u32().expect("read vtype1");
+        assert_eq!(vtype1, 9);
+
+        let result1 = read_kv_value(&mut cursor, vtype1);
+        assert!(result1.is_ok());
+        assert!(result1.unwrap().is_none(), "array of u16 should return None");
+
+        let key2 = cursor.gguf_string().expect("read key2");
+        assert_eq!(key2, "sentinel_i");
+
+        let vtype2 = cursor.u32().expect("read vtype2");
+        assert_eq!(vtype2, 5);
+
+        let result2 = read_kv_value(&mut cursor, vtype2);
+        assert!(result2.is_ok());
+        if let Some(MetaValue::I32(val)) = result2.unwrap() {
+            assert_eq!(val, -42);
+        } else {
+            panic!("expected MetaValue::I32");
+        }
+
+        assert_eq!(cursor.p, bytes.len());
+    }
+}
