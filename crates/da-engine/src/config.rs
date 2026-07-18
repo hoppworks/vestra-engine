@@ -86,6 +86,13 @@ pub enum EngineError {
     MissingKey(&'static str),
     #[error("malformed gguf metadata for key {0}: {1}")]
     Malformed(&'static str, String),
+    /// Matches `../src/cam_pose.cpp::CamPose::pose`'s runtime validation:
+    /// `if (cam_token.empty() || !bb0 || (int64_t)cam_token.size() != bb0->ne[0]) return false;`.
+    /// `expected` is `cam.bb0.weight`'s input dim (derived from the loaded
+    /// weight tensor's shape, not hardcoded); `got` is the caller-supplied
+    /// `cam_token.len()`.
+    #[error("camera token dimension mismatch: expected {expected} (cam.bb0.weight input dim), got {got}")]
+    CamTokenDimMismatch { expected: usize, got: usize },
 }
 
 /// Model hyperparameters and preprocessing config read from `depthanything3.*` GGUF metadata.
