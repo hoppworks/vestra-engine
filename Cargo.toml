@@ -5,6 +5,7 @@ members = [
     "crates/da-kernels",
     "crates/da-graph",
     "crates/da-engine",
+    "crates/da-cli",
     "da-parity",
 ]
 

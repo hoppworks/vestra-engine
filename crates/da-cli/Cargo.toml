@@ -1,0 +1,19 @@
+[package]
+name = "da-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "da"
+path = "src/main.rs"
+
+[dependencies]
+da-engine = { path = "../da-engine" }
+clap.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+assert_cmd = "2"
