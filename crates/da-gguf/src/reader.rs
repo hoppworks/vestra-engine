@@ -20,9 +20,6 @@ pub struct GgufFile {
     _mmap: Mmap,
     tensors: Vec<TensorInfo>,
     data_start: usize,
-    // Rohbytes als 'static-View auf das mmap (sicher, solange _mmap lebt).
-    bytes: *const u8,
-    len: usize,
 }
 
 // GGML dtype-Codes (Teilmenge v1): F32=0, F16=1, Q8_0=8.
@@ -71,8 +68,6 @@ impl GgufFile {
     pub fn open(path: &Path) -> Result<GgufFile, GgufError> {
         let file = std::fs::File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
-        let bytes_ptr = mmap.as_ptr();
-        let len = mmap.len();
         let mut c = Cursor { b: &mmap[..], p: 0 };
         if c.take(4)? != b"GGUF" { return Err(GgufError::BadMagic); }
         let version = c.u32()?;
@@ -102,7 +97,7 @@ impl GgufFile {
         // Datenblock beginnt am nächsten `alignment`-Vielfachen nach den Infos.
         let pad = (alignment - (c.p as u64 % alignment)) % alignment;
         let data_start = c.p + pad as usize;
-        Ok(GgufFile { _mmap: mmap, tensors, data_start, bytes: bytes_ptr, len })
+        Ok(GgufFile { _mmap: mmap, tensors, data_start })
     }
 
     fn info(&self, name: &str) -> Result<&TensorInfo, GgufError> {
@@ -110,7 +105,7 @@ impl GgufFile {
             .ok_or_else(|| GgufError::TensorNotFound(name.to_string()))
     }
 
-    fn raw(&self) -> &[u8] { unsafe { std::slice::from_raw_parts(self.bytes, self.len) } }
+    fn raw(&self) -> &[u8] { &self._mmap[..] }
 
     pub fn tensor_f32(&self, name: &str) -> Result<TensorF32, GgufError> {
         let ti = self.info(name)?;
@@ -122,11 +117,23 @@ impl GgufFile {
         let data = match ti.dtype {
             GGML_F32 => {
                 let end = base + n * 4;
+                if end > bytes.len() {
+                    return Err(GgufError::Malformed(format!(
+                        "tensor '{}' data out of bounds: [{}, {}) exceeds file size {}",
+                        name, base, end, bytes.len()
+                    )));
+                }
                 bytes[base..end].chunks_exact(4)
                     .map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
             }
             GGML_F16 => {
                 let end = base + n * 2;
+                if end > bytes.len() {
+                    return Err(GgufError::Malformed(format!(
+                        "tensor '{}' data out of bounds: [{}, {}) exceeds file size {}",
+                        name, base, end, bytes.len()
+                    )));
+                }
                 bytes[base..end].chunks_exact(2)
                     .map(|c| f16::from_le_bytes(c.try_into().unwrap()).to_f32()).collect()
             }
