@@ -1,0 +1,11 @@
+[package]
+name = "da-parity"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+da-gguf = { path = "../crates/da-gguf" }
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
