@@ -131,6 +131,10 @@ mod tests {
     use super::*;
     use da_gguf::GgufFile;
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Atomic counter for generating unique temp filenames in parallel tests.
+    static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     /// Builds a minimal in-memory GGUF byte buffer with the given KV entries and no tensors,
     /// writes it to a temp file, and opens it as a `GgufFile`.
@@ -200,12 +204,17 @@ mod tests {
         let pad = (32 - (buf.len() % 32)) % 32;
         buf.extend_from_slice(&vec![0u8; pad]);
 
+        // Generate a unique filename: combine process ID, timestamp, and atomic counter
+        // to guarantee uniqueness even under parallel test execution.
+        let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "da_engine_test_{}.gguf",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "da_engine_test_{}_{}_{}.gguf",
+            pid, nanos, counter
         ));
         let mut file = std::fs::File::create(&path).expect("create temp gguf");
         file.write_all(&buf).expect("write temp gguf");
