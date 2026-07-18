@@ -138,6 +138,18 @@ impl Arena {
         let size = self.sizes[id.0];
         &mut self.storage[offset..offset + size]
     }
+
+    /// Returns `(offset, size)` — in `f32` elements — of tensor `id`'s slot
+    /// in the backing storage. `pub(crate)`-only: this exists purely so
+    /// `cpu_backend`'s debug-only aliasing assertions can check that the
+    /// unsafe pointer splits in `raw_parts` never touch overlapping ranges,
+    /// without giving outside callers a way to reach into arena internals.
+    /// Only called from `#[cfg(debug_assertions)]`-gated call sites, so it's
+    /// unused (and would warn as dead code) in release builds.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    pub(crate) fn range(&self, id: TensorId) -> (usize, usize) {
+        (self.offsets[id.0], self.sizes[id.0])
+    }
 }
 
 fn coalesce(blocks: &mut Vec<FreeBlock>) {
