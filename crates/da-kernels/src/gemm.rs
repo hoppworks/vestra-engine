@@ -14,6 +14,7 @@ impl Gemm for ScalarGemm {
 pub struct FaerGemm;
 impl Gemm for FaerGemm {
     fn gemm(&self, m: usize, n: usize, k: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
+        debug_assert_eq!(a.len(), m*k); debug_assert_eq!(b.len(), k*n); debug_assert_eq!(c.len(), m*n);
         use faer::Parallelism;
         // row-major Slices als faer-Views mit expliziten Strides interpretieren.
         let a = unsafe { faer::mat::from_raw_parts::<f32>(a.as_ptr(), m, k, k as isize, 1) };
