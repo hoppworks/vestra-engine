@@ -46,56 +46,57 @@ impl<'a> Cursor<'a> {
 }
 
 // KV-Value-Typen laut GGUF-Spec. Lies und gib den Wert zurück.
-fn read_kv_value(c: &mut Cursor, vtype: u32) -> Result<MetaValue, GgufError> {
+// Returns Ok(Some(value)) for supported types, Ok(None) for unsupported but skipped types.
+fn read_kv_value(c: &mut Cursor, vtype: u32) -> Result<Option<MetaValue>, GgufError> {
     match vtype {
         0 => {  // uint8
             let v = c.take(1)?[0] as u32;
-            Ok(MetaValue::U32(v))
+            Ok(Some(MetaValue::U32(v)))
         }
         1 => {  // int8
             let v = c.take(1)?[0] as i32;
-            Ok(MetaValue::I32(v))
+            Ok(Some(MetaValue::I32(v)))
         }
         2 => {  // uint16
             let v = u16::from_le_bytes(c.take(2)?.try_into().unwrap()) as u32;
-            Ok(MetaValue::U32(v))
+            Ok(Some(MetaValue::U32(v)))
         }
         3 => {  // int16
             let v = i16::from_le_bytes(c.take(2)?.try_into().unwrap()) as i32;
-            Ok(MetaValue::I32(v))
+            Ok(Some(MetaValue::I32(v)))
         }
         4 => {  // uint32
             let v = u32::from_le_bytes(c.take(4)?.try_into().unwrap());
-            Ok(MetaValue::U32(v))
+            Ok(Some(MetaValue::U32(v)))
         }
         5 => {  // int32
             let v = i32::from_le_bytes(c.take(4)?.try_into().unwrap());
-            Ok(MetaValue::I32(v))
+            Ok(Some(MetaValue::I32(v)))
         }
         6 => {  // float32
             let v = f32::from_le_bytes(c.take(4)?.try_into().unwrap());
-            Ok(MetaValue::F32(v))
+            Ok(Some(MetaValue::F32(v)))
         }
         7 => {  // bool
             let v = c.take(1)?[0] != 0;
-            Ok(MetaValue::Bool(v))
+            Ok(Some(MetaValue::Bool(v)))
         }
         8 => {  // string
             let n = c.u64()? as usize;
             let s = c.take(n)?;
-            Ok(MetaValue::Str(String::from_utf8_lossy(s).into_owned()))
+            Ok(Some(MetaValue::Str(String::from_utf8_lossy(s).into_owned())))
         }
         10 => {  // uint64
             let v = u64::from_le_bytes(c.take(8)?.try_into().unwrap());
-            Ok(MetaValue::U64(v))
+            Ok(Some(MetaValue::U64(v)))
         }
         11 => {  // int64
             let v = i64::from_le_bytes(c.take(8)?.try_into().unwrap());
-            Ok(MetaValue::U64(v as u64))
+            Ok(Some(MetaValue::U64(v as u64)))
         }
         12 => {  // float64
             let v = f64::from_le_bytes(c.take(8)?.try_into().unwrap());
-            Ok(MetaValue::F32(v as f32))
+            Ok(Some(MetaValue::F32(v as f32)))
         }
         9 => {  // array
             let elem = c.u32()?;
@@ -107,7 +108,7 @@ fn read_kv_value(c: &mut Cursor, vtype: u32) -> Result<MetaValue, GgufError> {
                         let v = u32::from_le_bytes(c.take(4)?.try_into().unwrap());
                         arr.push(v);
                     }
-                    Ok(MetaValue::ArrU32(arr))
+                    Ok(Some(MetaValue::ArrU32(arr)))
                 }
                 5 => {  // array of int32
                     let mut arr = Vec::with_capacity(n);
@@ -115,7 +116,7 @@ fn read_kv_value(c: &mut Cursor, vtype: u32) -> Result<MetaValue, GgufError> {
                         let v = i32::from_le_bytes(c.take(4)?.try_into().unwrap());
                         arr.push(v);
                     }
-                    Ok(MetaValue::ArrI32(arr))
+                    Ok(Some(MetaValue::ArrI32(arr)))
                 }
                 6 => {  // array of float32
                     let mut arr = Vec::with_capacity(n);
@@ -123,7 +124,7 @@ fn read_kv_value(c: &mut Cursor, vtype: u32) -> Result<MetaValue, GgufError> {
                         let v = f32::from_le_bytes(c.take(4)?.try_into().unwrap());
                         arr.push(v);
                     }
-                    Ok(MetaValue::ArrF32(arr))
+                    Ok(Some(MetaValue::ArrF32(arr)))
                 }
                 8 => {  // array of string
                     let mut arr = Vec::with_capacity(n);
@@ -131,7 +132,20 @@ fn read_kv_value(c: &mut Cursor, vtype: u32) -> Result<MetaValue, GgufError> {
                         let s = c.gguf_string()?;
                         arr.push(s);
                     }
-                    Ok(MetaValue::ArrStr(arr))
+                    Ok(Some(MetaValue::ArrStr(arr)))
+                }
+                // Unsupported but spec-valid array element types: skip their bytes and return None
+                0 | 1 | 2 | 3 | 7 | 10 | 11 | 12 => {
+                    // Skip n elements of the given type
+                    let bytes_per_elem = match elem {
+                        0 | 1 | 7 => 1,      // uint8, int8, bool
+                        2 | 3 => 2,           // uint16, int16
+                        10 | 11 => 8,         // uint64, int64
+                        12 => 8,              // float64
+                        _ => unreachable!(),
+                    };
+                    c.take(n * bytes_per_elem)?;
+                    Ok(None)
                 }
                 other => Err(GgufError::Malformed(format!("array element type {other}"))),
             }
@@ -160,8 +174,10 @@ impl GgufFile {
                 // Store general.alignment as a normal KV entry
                 kv.push((key, MetaValue::U32(alignment as u32)));
             } else {
-                let val = read_kv_value(&mut c, vtype)?;
-                kv.push((key, val));
+                if let Some(val) = read_kv_value(&mut c, vtype)? {
+                    kv.push((key, val));
+                }
+                // If read_kv_value returns None (unsupported but skipped type), don't insert entry
             }
         }
         let mut tensors = Vec::with_capacity(tensor_count as usize);
