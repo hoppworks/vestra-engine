@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/da-gguf",
+    "crates/da-kernels",
+    "crates/da-graph",
+    "crates/da-engine",
+    "crates/da-cli",
+    "da-parity",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+memmap2 = "0.9"
+half = "2"
+rayon = "1.10"
+faer = "0.19"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = "0.25"
+clap = { version = "4", features = ["derive"] }
+criterion = "0.5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
