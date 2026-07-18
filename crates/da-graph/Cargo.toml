@@ -5,3 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+da-kernels = { path = "../da-kernels" }
+da-gguf = { path = "../da-gguf" }
