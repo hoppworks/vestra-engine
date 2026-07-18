@@ -54,3 +54,74 @@ Die AVX-512F/BW/VNNI-Kernelpfade (Tasks 8–10) werden auf einer aarch64-Maschin
   2. Es gibt kein reales Modell und keine Dumps in diesem Environment (`../models/da3-base-f16.gguf`, `../dumps/reference.gguf` fehlen beide — siehe `tests/backbone_parity.rs`, das deshalb sauber überspringt). Ein Benchmark von `vit_block`/`Backbone::forward` gegen synthetische Zufallsgewichte (wie in den Unit-Tests dieser Task verwendet) hätte zwar eine Zahl geliefert, aber keine, die irgendetwas über reale Performance-Constraints (echte Tensor-Shapes stimmen zwar überein, aber Cache-Verhalten/Allokationsmuster bei wiederholten Mini-`Plan`-Kompilierungen pro Block-Aufruf — siehe `vit_block.rs`'s `run_layernorm`/`run_linear`/`run_attention`-Helfer — wären nicht repräsentativ für eine spätere, tatsächlich für Wiederverwendung optimierte Fassung) aussagt. Eine fabrizierte Zahl ist schlechter als keine Zahl.
 - **Bekannter, dokumentierter Performance-Fluchtpunkt für später:** Die aktuelle `vit_block`-Implementierung kompiliert pro Aufruf mehrere kleine `da_graph::Graph`/`Plan`/`Arena`-Instanzen neu (eine je Rechenschritt: LN1, QKV-Gemm, Attention, Proj+LS1, LN2, FC1+GELU, FC2+LS2) statt eine einzige, über alle 12 Layer wiederverwendete `Arena` zu pflegen. Das ist für Task 17 (Korrektheit der drei Fallen: QK-Norm-Eps, RoPE-Gating, LayerScale-Presence-Gating) bewusst in Kauf genommen — Wiederverwendung/Fusion einer einzigen Arena über den gesamten Backbone-Forward ist ein offensichtlicher erster Optimierungskandidat, sobald eine reale Baseline zum Vergleich existiert.
 - **Verifikation ohne Baseline/Dumps:** alle mechanisch prüfbaren Teile (siehe Task-17-Report) sind grün; End-to-End-Zahlen-Parität gegen `feat_{5,7,9,11}` ist UNVERIFIZIERT.
+
+## Task 22 — `da bench` + `compare_e2e.sh`: E2E-Latenzmessung ist Infrastruktur, keine Messung
+
+- **Implementiert:** `da bench --model <gguf> --image <png> --repeat N --warmup W`
+  (`crates/da-cli/src/bench.rs`) — lädt das Modell einmal (`Engine::load`), führt
+  `warmup` ungemessene `Engine::infer`-Aufrufe aus, misst `repeat` weitere Aufrufe
+  mit `std::time::Instant` und druckt Median/p95 (lineare Interpolations-Perzentile,
+  dieselbe Konvention wie `numpy.percentile`'s `linear`-Methode) als
+  `median_ms=...`/`p95_ms=...`-Zeilen sowie eine `iter[i]_ms=...`-Zeile pro Sample.
+  Terminologie und Format ("N warmup + median over N timed iterations") sind bewusst
+  an dieses Dokument angelehnt, damit `da bench`-Zahlen direkt mit den oben
+  dokumentierten C++/PyTorch-Zahlen vergleichbar sind. `scripts/compare_e2e.sh`
+  läuft die reale C++-CLI (`da3-cli depth --model M --input I --repeat N`, deren
+  eingebauter Bench-Hook `examples/cli/main.cpp::cmd_depth_bench`) und `da bench` auf
+  demselben Bild/Modell mit demselben `--repeat`/`--warmup`-Protokoll und druckt beide
+  Mediane nebeneinander plus den Faktor `rust_median_ms / cpp_median_ms`.
+
+- **Schritt 6 (E2E-Latenz messen + Gesamtfaktor gegen die 346-ms-Baseline eintragen):
+  NICHT durchführbar in diesem Environment — ehrlich offen gelassen, keine Zahl
+  fabriziert.** Zwei harte Voraussetzungen fehlen beide:
+  1. Ein echtes DA3-BASE-GGUF-Modell (`../models/*.gguf`) — existiert in diesem
+     Environment nicht (bestätigt: `models/` enthält nur `MODEL_CARD.md`/`SHA256SUMS`,
+     keine `.gguf`-Datei), genau wie bei jedem anderen modell-gated Test in diesem
+     Workspace.
+  2. Eine gebaute C++-Referenzbinary — `../build/` existiert in diesem Environment
+     nicht; das C++-Projekt wurde hier nie mit `cmake --build ../build` kompiliert.
+     `scripts/compare_e2e.sh` wurde tatsächlich ausgeführt (`--model /tmp/nope.gguf
+     --image /tmp/nope.png`) und bestätigt den erwarteten sauberen Skip-Pfad: druckt
+     "C++ CLI binary not found ... run 'cmake --build ../build' first" und beendet
+     sich mit Exit-Code 0 (kein Crash, keine irreführende Fehlermeldung).
+  Die `da bench`/`compare_e2e.sh`-Tooling ist fertig gebaut und einsatzbereit, sobald
+  beide Voraussetzungen erfüllt sind — das ist **Infrastruktur, keine abgeschlossene
+  Messung**. Die Timing-/Perzentil-/Ausgabe-Logik selbst ist real getestet (siehe
+  Verifikation unten), nur die *Zahl* gegen die 346-ms-Baseline fehlt.
+
+- **Offene Komponenten-Hebel, die für eine spätere echte E2E-Messung relevant sein
+  dürften** (evidenzbasiert aus den bisherigen Tasks, nicht spekulativ neu erfunden):
+  1. **faer als GEMM-Backend** (Task 6-Entscheidung) — noch nie gegen die reale
+     ggml/tinyBLAS-C++-Baseline verglichen (das o.g. "faer vs. ggml/tinyBLAS:
+     not yet available"-Item ist selbst noch offen); erster Kandidat für einen
+     Go/No-Go-Check, sobald `da bench` gegen ein echtes Modell läuft.
+  2. **q8_0/VNNI-Kernel** (Tasks 8-9) — auf dieser aarch64-Entwicklungsmaschine
+     nur über den skalaren Oracle-Pfad verifiziert; numerische Korrektheit und
+     jede Performance-Aussage zu AVX-512/VNNI sind laut dem Hinweis oben in
+     diesem Dokument auf echter x86-64-Hardware weiterhin unverifiziert.
+  3. **`vit_block`'s Mini-Graph/Plan-pro-Op-pro-Layer-Muster** (Task 17s
+     dokumentierter "Performance-Fluchtpunkt") — kompiliert aktuell mehrere
+     kleine `da_graph::Graph`/`Plan`/`Arena`-Instanzen pro Block-Aufruf statt
+     eine einzige über den gesamten Backbone-Forward wiederverwendete Arena;
+     laut Task-17-Log der naheliegendste erste Optimierungskandidat, sobald eine
+     reale Baseline zum Vergleich existiert.
+  4. Die C++-Seite selbst hat bereits Winograd-Conv (#4/#5) und fused
+     Flash-Attention (#6) für den Backbone/Head-Pfad; die Rust-Seite (Tasks
+     14-21) hat noch keine dieser Optimierungen — ein direkter Vergleich wird
+     also nicht nur GEMM-Backend-Unterschiede zeigen, sondern auch, welche der
+     oben dokumentierten C++-Optimierungen (Winograd 3x3, ggml_flash_attn_ext,
+     pos-embed-Caching) auf der Rust-Seite noch fehlen.
+
+- **Verifikation (ohne echtes Modell/C++-Binary):**
+  - `cargo test -p da-cli` — Unit-Tests für `compute_stats`/`percentile` (feste
+    Sample-Listen, u.a. das im Brief genannte `[10.0, 20.0, 15.0, ...]`-Muster),
+    `clap`-Parsing-Tests für `Command::Bench`, plus ein neuer Integrationstest
+    (`tests/bench_native.rs`) der `da bench --repeat 2 --warmup 1` gegen ein
+    selbstgebautes synthetisches GGUF (echte Binär-GGUF-Bytes, dasselbe Muster wie
+    `da-engine/tests/e2e_native.rs`) laufen lässt und eine parsebare, endliche,
+    nicht-negative `median_ms=`/`p95_ms=`-Zeile verifiziert — reale,
+    modell-unabhängige Abdeckung der Timing-/Parsing-Logik selbst.
+  - `scripts/compare_e2e.sh` mit einem nicht-existenten Modell/Bild ausgeführt:
+    bestätigt den Graceful-Skip-Pfad (Exit 0, klare Meldung) in genau der Umgebung,
+    in der das C++-Binary tatsächlich fehlt.
+  - `cargo test --workspace`: alle Tests grün, keine Regression.
