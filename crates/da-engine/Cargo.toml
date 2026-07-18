@@ -6,4 +6,8 @@ license.workspace = true
 
 [dependencies]
 da-gguf = { path = "../da-gguf" }
+da-kernels = { path = "../da-kernels" }
 thiserror.workspace = true
+
+[dev-dependencies]
+da-parity = { path = "../../da-parity" }
