@@ -15,22 +15,34 @@ use da_kernels::bilinear_resize;
 /// file does not exist in this environment — see `tests/preprocess_parity.rs`,
 /// which will skip until dumps are available.
 ///
-/// Resize: only `da_kernels::resample::bilinear_resize` exists in da-kernels
-/// (Task 11), so for `cfg.img_resize_mode == "bilinear"` we use it directly.
-/// For any other mode (notably `"bicubic"`, which is what real DA3 GGUF
-/// configs use per `crates/da-engine/src/config.rs` test fixtures) we fall
-/// back to bilinear as a **documented approximation** — this is a known gap:
-/// true bicubic resize (matching cv2 `INTER_CUBIC`/`resize_cubic` in
-/// `src/preprocess.cpp`) is not implemented here and would need a dedicated
-/// kernel to reach parity for bicubic-configured models. The C++ engine's
-/// real preprocessing pipeline (`preprocess_real`) is also more elaborate
-/// than a single resize-to-`image_size` step (boundary resize to a target
-/// side length, then a second resize to snap to a patch-size multiple); this
-/// function instead does the simpler single resize to `image_size x
-/// image_size` implied by the Task 15 brief's interface (which only takes a
-/// `ModelConfig` with a scalar `image_size`, not the target/patch-aware
-/// policy). Reconciling with `preprocess_real`'s two-step policy is out of
-/// scope for this task.
+/// ## Scope: identity-resize regime only
+///
+/// The C++ reference has two preprocessing entry points: `preprocess()`
+/// (simple, single resize-to-`image_size`) and `preprocess_real()` (the
+/// production DA3 pipeline — cv2-bit-exact boundary resize using Catmull-Rom
+/// bicubic / `INTER_AREA` decimation kernels, followed by a patch-size-multiple
+/// snap). This function implements the simple `preprocess()` shape only, and
+/// its output only matches *either* C++ function when the input is already a
+/// multiple of `patch_size` — which makes the resize step a no-op regardless
+/// of which kernel would otherwise be selected. That is the case for every
+/// parity gate currently in this plan: the fixed 224x224 test fixture
+/// produced by `../scripts/da3_reference.py`'s `fixed_input()` is already
+/// patch-aligned (`patch_size` = 14), so `input_image`/`raw_image` in
+/// `../dumps/reference.gguf` never exercise a real resize.
+///
+/// `cfg.img_resize_mode` ("bilinear" vs "bicubic") is **not currently
+/// consulted for kernel selection** — both values route to
+/// `da_kernels::bilinear_resize` below. This is intentionally simplified,
+/// not an oversight: no task in the current plan (Tasks 15-20) ever feeds
+/// this function a non-patch-aligned image, so no fixture would notice a
+/// difference between resize kernels, and only
+/// `da_kernels::resample::bilinear_resize` exists in da-kernels (Task 11) —
+/// no bicubic kernel has been implemented. True cv2-bit-exact
+/// `preprocess_real` parity (boundary resize with Catmull-Rom
+/// bicubic/`INTER_AREA` kernels, then patch-snap, matching
+/// `src/preprocess.cpp`'s `resize_cubic`/`resize_area`) is explicitly out of
+/// scope for this task and tracked as a deferred backlog item — see Task 20b
+/// in `docs/plans/2026-07-18-rust-engine-v1.md`.
 ///
 /// Returns `(H, W)` after resize — currently always
 /// `(cfg.image_size as usize, cfg.image_size as usize)`, but computed rather
@@ -65,16 +77,15 @@ pub fn preprocess(
         }
     }
 
-    // Resize (channel-planar in, channel-planar out).
+    // Resize (channel-planar in, channel-planar out). `cfg.img_resize_mode`
+    // is intentionally not consulted here: this function only operates
+    // correctly in the identity-resize regime (see module-level doc comment),
+    // where the choice of kernel is a no-op, and no bicubic kernel exists in
+    // da-kernels yet. This is a fixed hook point for future dispatch on
+    // `img_resize_mode` once real non-trivial resizing (Task 20b) is
+    // implemented.
     let mut resized_chw = vec![0f32; CHANNELS * out_h * out_w];
-    if cfg.img_resize_mode == "bilinear" {
-        bilinear_resize(&in_chw, CHANNELS, h, w, out_h, out_w, &mut resized_chw);
-    } else {
-        // Documented approximation for "bicubic" (and any other unrecognized
-        // mode): use bilinear. See module-level doc comment for the gap this
-        // leaves for bicubic-configured models.
-        bilinear_resize(&in_chw, CHANNELS, h, w, out_h, out_w, &mut resized_chw);
-    }
+    bilinear_resize(&in_chw, CHANNELS, h, w, out_h, out_w, &mut resized_chw);
 
     // Normalize per channel: (v - mean[c]) / std[c]. Already CHW, so this is
     // just a per-plane affine transform; also serves as our NCHW output

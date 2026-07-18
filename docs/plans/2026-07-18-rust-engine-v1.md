@@ -1566,6 +1566,20 @@ fn linear_gelu_graph_matches_manual() {
 
 ---
 
+### Task 20b (deferred, non-blocking): `preprocess_real` bit-exakte cv2-Parität
+
+**Status:** Nicht im kritischen Pfad dieser 24 Tasks eingeplant. Zurückgestellt, bis `../dumps/reference_preproc_real.gguf` in einer Umgebung neu erzeugt wird, die die C++-Dump-Skripte gegen ein echtes (nicht 224×224-fixes) Testbild ausführen kann.
+
+**Warum zurückgestellt:** Im Review von Task 15 (2026-07-18) wurde festgestellt, dass der C++-Codebase zwei Preprocessing-Funktionen besitzt — `preprocess()` (wird von den tatsächlichen Parity-Gates dieses Plans verwendet, die alle ein festes 224×224-Testbild nutzen, das bereits patch-aligned ist, sodass der Resize-Schritt dort ein No-op ist) und `preprocess_real()` (die echte Produktions-DA3-Pipeline: Boundary-Resize mit cv2-bit-exakten Catmull-Rom-Bicubic-/`INTER_AREA`-Dezimierungs-Kernels, danach Patch-Multiple-Snapping, mit Python-Round-Half-to-Even-Rundungssemantik durchgehend). Keine Task im kritischen Pfad dieses Plans (Tasks 15–20) übt echtes, nicht-triviales Bild-Resizing aus, daher blockiert diese Lücke aktuell nichts Geplantes.
+
+**Scope, falls aufgegriffen:**
+- `ModelConfig.img_resize_target: u32` ergänzen (C++-Default 504) und die upper_bound/lower_bound-Semantik von `img_resize_mode` durchreichen (aktuell nur ein Freitext-String-Feld).
+- `preprocess_real(raw: &[u8], w, h, cfg) -> (Vec<f32> /*CHW*/, usize, usize)` implementieren: (1) Boundary-Resize — Skalierung so, dass die längste (upper_bound) oder kürzeste (lower_bound) Seite `img_resize_target` trifft, via Python-Round-Half-to-Even; (2) Patch-Snap jeder resultierenden Dimension auf das nächste Vielfache von `patch_size`; (3) Normalize+CHW (bereits korrekt, aus Task 15 wiederverwenden).
+- Resize-Kernel müssen cv2-bit-exakt sein: separierbares Catmull-Rom-Bicubic (a=-0.75) mit `saturate_cast<u8>` (Round-Half-to-Even + Clamp) für Upscaling; `INTER_AREA`-Box-/Dezimierungs-Resampling für Downscaling. Algorithmus aus `../src/preprocess.cpp`'s `resize_cubic`/`resize_area`/`area_tab`-Funktionen portieren (nur lesend als Referenz).
+- Gate: Ansatz aus `../tests/test_preprocess_real.cpp` portieren — Vergleich gegen `../dumps/reference_preproc_real.gguf` (Tensor `proc_image`, KV `preproc.out_h`/`preproc.out_w`) mit max. Toleranz 5e-2 (lockerer als die übliche 2e-3, da hier bei jedem Resize-Schritt uint8-Quantisierung eine Rolle spielt).
+
+---
+
 # M7 — `da-cli` & E2E-Gate
 
 ### Task 21: CLI `infer`
