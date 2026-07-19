@@ -14,19 +14,40 @@ Auf dem x86-Rechner kann beides live gehen. Reihenfolge unten.
 
 ---
 
-## 0. Voraussetzungen
+## 0. Repo klonen
+
+Das Repo ist **privat** auf `hoppworks`. Auf dem neuen Rechner ist noch nichts vorhanden — zuerst
+klonen (über `gh` — nutzt die bereits authentifizierte GitHub-CLI-Session — oder per SSH/HTTPS mit
+eigenem Zugang):
+
+```bash
+gh repo clone hoppworks/depth-anything.cpp-master
+cd depth-anything.cpp-master
+```
+
+Falls `gh` auf dem neuen Rechner noch nicht eingeloggt ist: `gh auth login` zuerst, oder per
+HTTPS/SSH klonen (`git clone https://github.com/hoppworks/depth-anything.cpp-master.git` — fragt
+dann nach Zugangsdaten/Personal-Access-Token, da privat).
+
+Das ggml-Submodule (für den C++-Build in Schritt 4) mit klonen:
+
+```bash
+git submodule update --init --recursive
+```
+
+## 1. Voraussetzungen
 
 - x86-64 CPU mit AVX-512F/BW/VNNI (Cascade Lake oder neuer für VNNI; sonst fällt der Code
   automatisch auf AVX2/skalar zurück — dann testet das nur den Fallback, nicht den VNNI-Pfad)
-- Rust stable (`rustup show` sollte `stable` zeigen; kein Nightly nötig)
+- Rust stable (`rustup show` sollte `stable` zeigen; kein Nightly nötig) — falls nicht
+  installiert: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - CMake + C++17-Compiler (für die C++-Referenz-Engine)
-- Python 3 mit `torch`, `huggingface_hub`, `numpy` (für Modell-Download/-Konvertierung und Dumps)
+- Python 3 mit `torch`, `huggingface_hub`, `numpy` (für Modell-Download/-Konvertierung und Dumps) —
+  `pip install torch huggingface_hub numpy`
 
-```bash
-cd depth-anything.cpp-master   # Repo-Root (git-Root)
-```
+Ab hier befinden wir uns im Repo-Root (`depth-anything.cpp-master/`, dem git-Root).
 
-## 1. Modell besorgen und nach GGUF konvertieren
+## 2. Modell besorgen und nach GGUF konvertieren
 
 ```bash
 python3 scripts/download_model.py --repo depth-anything/DA3-BASE --out models/DA3-BASE
@@ -37,7 +58,7 @@ Für weitere Größen (Small/Large/Giant) einfach `--repo`/`--model`/`--output` 
 (`depth-anything/DA3-SMALL`, `DA3-LARGE`, `DA3-GIANT`). Für v1 reicht **DA3-BASE** — das ist das
 Modell, gegen das der gesamte Rust-Plan entwickelt und mit der echten C++-Quelle abgeglichen wurde.
 
-## 2. C++-Referenz-Dumps erzeugen
+## 3. C++-Referenz-Dumps erzeugen
 
 ```bash
 python3 scripts/dump_reference.py
@@ -47,7 +68,7 @@ Erzeugt `dumps/reference.gguf` + `dumps/manifest.json` (Toleranzen atol=rtol=2e-
 das, was `depth-anything-rs`' Parity-Tests (`input_image`, `feat_5/7/9/11`, `head_depth`,
 `extrinsics`, `intrinsics`, `pos_embed_added`, `uv_embed_64`, …) erwarten.
 
-## 3. C++-Projekt bauen (für baseline.json + compare_e2e.sh)
+## 4. C++-Projekt bauen (für baseline.json + compare_e2e.sh)
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -56,7 +77,7 @@ cmake --build build -j
 
 Falls das ggml-Submodule leer ist: `git submodule update --init --recursive` zuerst.
 
-## 4. Rust-Parity-Tests jetzt live laufen lassen
+## 5. Rust-Parity-Tests jetzt live laufen lassen
 
 ```bash
 cd depth-anything-rs
@@ -79,7 +100,7 @@ größte Restrisiken dokumentiert):
   `depthanything3.vit.alt_start`/`depthanything3.vit.cat_token` aus
   `models/depth-anything-base-f32.gguf` ausliest, ist der erste Debugging-Schritt.
 
-## 5. AVX-512/VNNI-Kernel numerisch verifizieren
+## 6. AVX-512/VNNI-Kernel numerisch verifizieren
 
 ```bash
 cargo test -p da-kernels
@@ -92,7 +113,7 @@ verglichen (Toleranz siehe jeweiligen Test). Ergebnis unbedingt in
 `depth-anything-rs/docs/optimization-log.md` unter einem neuen Abschnitt festhalten (Muster: siehe
 bestehende Einträge zu Task 8/9).
 
-## 6. Benchmarks + baseline.json + E2E-Vergleich
+## 7. Benchmarks + baseline.json + E2E-Vergleich
 
 ```bash
 # GEMM-Benchmark (Milestone-1-Entscheidung faer vs. scalar, jetzt auf echter Hardware)
@@ -109,7 +130,7 @@ bash scripts/compare_e2e.sh --model ../models/depth-anything-base-f32.gguf --ima
 `compare_e2e.sh` erwartet die C++-Binary unter `../build/examples/cli/da3-cli` (oder
 `../build/da3-cli` — beide Pfade werden probiert).
 
-## 7. Weiter optimieren — Zwei-Iterationen-Regel
+## 8. Weiter optimieren — Zwei-Iterationen-Regel
 
 Der Plan (`docs/plans/2026-07-18-rust-engine-v1.md`, Spec §6.3) verlangt: sobald eine Komponente
 schneller als die C++-Baseline ist, zwei benannte Optimierungshypothesen ausprobieren, bevor man
@@ -138,19 +159,27 @@ sind:
 ## Copy-paste-Prompt für Claude Code auf dem x86-Rechner
 
 ```
-Ich habe gerade das depth-anything.cpp-master-Repo (inkl. depth-anything-rs/) von
-https://github.com/hoppworks/depth-anything.cpp-master geklont. Lies zuerst
-depth-anything-rs/docs/NEXT_STEPS_X86.md komplett, dann depth-anything-rs/.superpowers/sdd/progress.md
-(das Ledger der bisherigen Subagent-Driven-Development-Session) für vollen Kontext, was bereits
-gebaut und wie es verifiziert wurde. Führe dann die Schritte 1-6 aus NEXT_STEPS_X86.md aus:
-Modell laden, GGUF konvertieren, C++-Referenz-Dumps erzeugen, C++-Projekt bauen, Rust-Parity-Tests
-laufen lassen (bisher übersprungene Tests sollten jetzt live gehen), AVX-512/VNNI-Kernel gegen
-echte Hardware verifizieren, Benchmarks + baseline.json + E2E-Vergleich erzeugen. Bei jedem Fehler:
-nicht raten, sondern gegen die echte C++-Quelle unter ../src/ gegenchecken (Muster aus der bisherigen
-Session: fast jede Unklarheit wurde durch Lesen des passenden ../src/*.cpp-Files aufgelöst, nicht
-durch Annahmen). Danach: die "Zwei-Iterationen-Regel" (Spec §6.3, docs/plans/2026-07-18-rust-engine-v1.md)
-auf die in NEXT_STEPS_X86.md Abschnitt 7 gelisteten offenen Hebel anwenden, docs/optimization-log.md
-mit echten Zahlen aktualisieren. Nutze Subagent-Driven Development (frischer Implementer-Subagent pro
-Schritt + unabhängiger Reviewer) wie in der Vorgänger-Session, und hol dir bei echten Unklarheiten
-einen Opus-Agenten mit hohem Reasoning-Aufwand als Advisor dazu statt zu raten.
+Auf diesem Rechner ist noch nichts vorhanden. Klone zuerst das private Repo
+https://github.com/hoppworks/depth-anything.cpp-master per `gh repo clone
+hoppworks/depth-anything.cpp-master` (falls `gh` nicht eingeloggt ist: `gh auth login`
+zuerst) in dieses Verzeichnis, wechsle hinein, und hol das ggml-Submodule mit
+`git submodule update --init --recursive`.
+
+Lies danach depth-anything-rs/docs/NEXT_STEPS_X86.md komplett, dann
+depth-anything-rs/.superpowers/sdd/progress.md (das Ledger der bisherigen
+Subagent-Driven-Development-Session) für vollen Kontext, was bereits gebaut und wie es
+verifiziert wurde. Führe dann die Schritte 1-7 aus NEXT_STEPS_X86.md aus: Voraussetzungen
+prüfen/installieren, Modell laden, GGUF konvertieren, C++-Referenz-Dumps erzeugen,
+C++-Projekt bauen, Rust-Parity-Tests laufen lassen (bisher übersprungene Tests sollten
+jetzt live gehen), AVX-512/VNNI-Kernel gegen echte Hardware verifizieren, Benchmarks +
+baseline.json + E2E-Vergleich erzeugen. Bei jedem Fehler: nicht raten, sondern gegen die
+echte C++-Quelle unter ../src/ gegenchecken (Muster aus der bisherigen Session: fast jede
+Unklarheit wurde durch Lesen des passenden ../src/*.cpp-Files aufgelöst, nicht durch
+Annahmen). Danach: die "Zwei-Iterationen-Regel" (Spec §6.3,
+docs/plans/2026-07-18-rust-engine-v1.md) auf die in NEXT_STEPS_X86.md Abschnitt 8
+gelisteten offenen Hebel anwenden, docs/optimization-log.md mit echten Zahlen
+aktualisieren. Nutze Subagent-Driven Development (frischer Implementer-Subagent pro
+Schritt + unabhängiger Reviewer) wie in der Vorgänger-Session, und hol dir bei echten
+Unklarheiten einen Opus-Agenten mit hohem Reasoning-Aufwand als Advisor dazu statt zu
+raten.
 ```
