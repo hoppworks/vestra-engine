@@ -79,6 +79,10 @@ pub fn attention(
     assert_eq!(out.len(), heads * n * head_dim);
 
     let scale = 1.0f32 / (head_dim as f32).sqrt();
+    #[cfg(target_arch = "x86_64")]
+    let use_avx512 = std::is_x86_feature_detected!("avx512f");
+    #[cfg(not(target_arch = "x86_64"))]
+    let use_avx512 = false;
     out.par_chunks_mut(head_dim).enumerate().for_each_init(
         || vec![0.0; head_dim],
         |acc, (row, oi)| {
@@ -93,6 +97,7 @@ pub fn attention(
                 n,
                 head_dim,
                 scale,
+                use_avx512,
                 acc,
                 oi,
             );
@@ -109,6 +114,7 @@ fn attention_row(
     n: usize,
     head_dim: usize,
     scale: f32,
+    use_avx512: bool,
     acc: &mut [f32],
     oi: &mut [f32],
 ) {
@@ -140,8 +146,25 @@ fn attention_row(
         for value in acc.iter_mut() {
             *value *= correction;
         }
+        for score in &mut local_scores[..j1 - j0] {
+            *score -= new_max;
+        }
+        #[cfg(target_arch = "x86_64")]
+        if use_avx512 {
+            // SAFETY: runtime feature detection above guarantees AVX-512F.
+            unsafe { crate::simd_avx512::exp_in_place_avx512(&mut local_scores[..j1 - j0]) };
+        } else {
+            for score in &mut local_scores[..j1 - j0] {
+                *score = score.exp();
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        for score in &mut local_scores[..j1 - j0] {
+            let _ = use_avx512;
+            *score = score.exp();
+        }
         for (t, j) in (j0..j1).enumerate() {
-            let p = (local_scores[t] - new_max).exp();
+            let p = local_scores[t];
             running_sum += p;
             let vj = &vh[j * head_dim..(j + 1) * head_dim];
             for d in 0..head_dim {
@@ -168,6 +191,7 @@ pub(crate) fn attention_serial(
     out: &mut [f32],
 ) {
     let scale = 1.0f32 / (head_dim as f32).sqrt();
+    let use_avx512 = false;
     let mut acc = vec![0.0; head_dim];
     for row in 0..heads * n {
         let h = row / n;
@@ -181,6 +205,7 @@ pub(crate) fn attention_serial(
             n,
             head_dim,
             scale,
+            use_avx512,
             &mut acc,
             &mut out[row * head_dim..(row + 1) * head_dim],
         );

@@ -63,6 +63,22 @@ unsafe fn exp_avx512(x: __m512) -> __m512 {
     _mm512_mul_ps(y, pow2n)
 }
 
+/// In-place AVX-512 exponential with a scalar tail. This is the same
+/// approximation used by the AVX-512 GELU path above.
+#[target_feature(enable = "avx512f")]
+pub(crate) unsafe fn exp_in_place_avx512(values: &mut [f32]) {
+    let main = values.len() - (values.len() % LANES);
+    let mut i = 0;
+    while i < main {
+        let ptr = values.as_mut_ptr().add(i);
+        _mm512_storeu_ps(ptr, exp_avx512(_mm512_loadu_ps(ptr)));
+        i += LANES;
+    }
+    for value in &mut values[main..] {
+        *value = value.exp();
+    }
+}
+
 /// Vectorized `erf` using the same Abramowitz-Stegun 7.1.26 approximation
 /// as `scalar::erf` (|error| < 1.5e-7), so `gelu_avx512` stays within the
 /// tolerance band of `scalar::gelu`.
@@ -160,6 +176,7 @@ pub(crate) unsafe fn add_avx512(dst: &mut [f32], src: &[f32]) {
         crate::scalar::add(&mut dst[main..n], &src[main..n]);
     }
 }
+
 
 /// Dot product of two 32-lane q8_0 int8 blocks (`ax`, `by`, both signed
 /// bytes in `[-127, 127]`), returned as a raw (unscaled by `d_a*d_b`) i32
