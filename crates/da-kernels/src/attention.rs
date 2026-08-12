@@ -175,6 +175,16 @@ fn attention_row(
             let p = local_scores[t];
             running_sum += p;
             let vj = &vh[j * head_dim..(j + 1) * head_dim];
+            #[cfg(target_arch = "x86_64")]
+            if use_avx512 {
+                // SAFETY: runtime feature detection above guarantees AVX-512F.
+                unsafe { crate::simd_avx512::scaled_add_avx512(acc, p, vj) };
+            } else {
+                for d in 0..head_dim {
+                    acc[d] += p * vj[d];
+                }
+            }
+            #[cfg(not(target_arch = "x86_64"))]
             for d in 0..head_dim {
                 acc[d] += p * vj[d];
             }

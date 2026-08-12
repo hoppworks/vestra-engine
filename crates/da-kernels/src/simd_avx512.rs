@@ -104,6 +104,23 @@ pub(crate) unsafe fn dot_avx512(a: &[f32], b: &[f32]) -> f32 {
     sum
 }
 
+#[target_feature(enable = "avx512f")]
+pub(crate) unsafe fn scaled_add_avx512(dst: &mut [f32], scale: f32, src: &[f32]) {
+    debug_assert_eq!(dst.len(), src.len());
+    let scale_vec = _mm512_set1_ps(scale);
+    let main = dst.len() - (dst.len() % LANES);
+    let mut i = 0;
+    while i < main {
+        let ptr = dst.as_mut_ptr().add(i);
+        let product = _mm512_mul_ps(_mm512_loadu_ps(src.as_ptr().add(i)), scale_vec);
+        _mm512_storeu_ps(ptr, _mm512_add_ps(_mm512_loadu_ps(ptr), product));
+        i += LANES;
+    }
+    for i in main..dst.len() {
+        dst[i] += scale * src[i];
+    }
+}
+
 /// Vectorized `erf` using the same Abramowitz-Stegun 7.1.26 approximation
 /// as `scalar::erf` (|error| < 1.5e-7), so `gelu_avx512` stays within the
 /// tolerance band of `scalar::gelu`.
