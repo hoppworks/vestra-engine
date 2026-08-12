@@ -14,28 +14,6 @@ static WINOGRAD_FILTERS: OnceLock<Mutex<HashMap<WinogradFilterKey, Arc<[f32]>>>>
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,fma")]
-unsafe fn winograd_accumulate_avx512(
-    transformed: &[f32],
-    v: &[f32],
-    in_c: usize,
-    out_c: usize,
-    dst: &mut [f32],
-) {
-    use core::arch::x86_64::*;
-    debug_assert_eq!(dst.len(), out_c * 16);
-    for oc in 0..out_c {
-        let mut acc = _mm512_setzero_ps();
-        for ic in 0..in_c {
-            let u = unsafe { transformed.as_ptr().add((oc * in_c + ic) * 16) };
-            let x = unsafe { v.as_ptr().add(ic * 16) };
-            acc = unsafe { _mm512_fmadd_ps(_mm512_loadu_ps(u), _mm512_loadu_ps(x), acc) };
-        }
-        unsafe { _mm512_storeu_ps(dst.as_mut_ptr().add(oc * 16), acc) };
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f,fma")]
 unsafe fn conv_transpose_nonoverlap_avx512(
     input: &[f32], in_c: usize, ih: usize, iw: usize, weight: &[f32], out_c: usize,
     kh: usize, kw: usize, bias: Option<&[f32]>, out: &mut [f32],
@@ -106,7 +84,9 @@ fn transformed_winograd_filter(weight: &[f32], in_c: usize, out_c: usize) -> Arc
     if let Some(filter) = cache.get(&key) {
         return Arc::clone(filter);
     }
-    let mut transformed = vec![0.0; out_c * in_c * 16];
+    // ggml's cache puts output channels innermost. This is the layout the
+    // AVX-512 blocked kernel consumes: U[position][input][output].
+    let mut transformed = vec![0.0; 16 * in_c * out_c];
     for oc in 0..out_c {
         for ic in 0..in_c {
             let g = &weight[(oc * in_c + ic) * 9..(oc * in_c + ic + 1) * 9];
@@ -118,13 +98,16 @@ fn transformed_winograd_filter(weight: &[f32], in_c: usize, out_c: usize) -> Arc
                 t[2][j] = 0.5 * (a - b + c);
                 t[3][j] = c;
             }
-            let u = &mut transformed[(oc * in_c + ic) * 16..(oc * in_c + ic + 1) * 16];
+            let mut u = [0.0; 16];
             for i in 0..4 {
                 let (a, b, c) = (t[i][0], t[i][1], t[i][2]);
                 u[i * 4] = a;
                 u[i * 4 + 1] = 0.5 * (a + b + c);
                 u[i * 4 + 2] = 0.5 * (a - b + c);
                 u[i * 4 + 3] = c;
+            }
+            for position in 0..16 {
+                transformed[(position * in_c + ic) * out_c + oc] = u[position];
             }
         }
     }
@@ -190,86 +173,89 @@ fn conv3x3_winograd_f2(
     let tiles_x = ow.div_ceil(2);
     let tiles = tiles_y * tiles_x;
     let transformed = transformed_winograd_filter(weight, in_c, out_c);
+    const TILE_BLOCK: usize = 8;
     let mut tile_out = vec![0.0; tiles * out_c * 4];
     tile_out
-        .par_chunks_mut(out_c * 4)
+        .par_chunks_mut(TILE_BLOCK * out_c * 4)
         .enumerate()
         .for_each_init(
-            || vec![0.0; in_c * 16],
-            |v, (tile, dst)| {
-            let ty = tile / tiles_x;
-            let tx = tile % tiles_x;
-            let y = ty * 2;
-            let x = tx * 2;
-            for ic in 0..in_c {
-                let d = &mut v[ic * 16..(ic + 1) * 16];
-                for dy in 0..4 {
-                    let sy = y as isize + dy as isize - 1;
-                    for dx in 0..4 {
-                        let sx = x as isize + dx as isize - 1;
-                        d[dy * 4 + dx] = if sy >= 0 && sy < ih as isize && sx >= 0 && sx < iw as isize {
-                            input[(ic * ih + sy as usize) * iw + sx as usize]
-                        } else { 0.0 };
-                    }
-                }
-                let mut m = [0.0; 16];
-                for j in 0..4 {
-                    let (a, b, c, d3) = (d[j], d[4 + j], d[8 + j], d[12 + j]);
-                    m[j] = a - c;
-                    m[4 + j] = b + c;
-                    m[8 + j] = c - b;
-                    m[12 + j] = b - d3;
-                }
-                for i in 0..4 {
-                    let (a, b, c, d3) = (m[i * 4], m[i * 4 + 1], m[i * 4 + 2], m[i * 4 + 3]);
-                    d[i * 4] = a - c;
-                    d[i * 4 + 1] = b + c;
-                    d[i * 4 + 2] = c - b;
-                    d[i * 4 + 3] = b - d3;
-                }
-            }
-            let mut products = vec![0.0; out_c * 16];
-            #[cfg(target_arch = "x86_64")]
-            let use_avx512 = std::is_x86_feature_detected!("avx512f")
-                && std::is_x86_feature_detected!("fma");
-            #[cfg(target_arch = "x86_64")]
-            if use_avx512 {
-                // SAFETY: runtime ISA check; all transformed Winograd rows
-                // and tiles contain exactly sixteen F32 coefficients.
-                unsafe { winograd_accumulate_avx512(&transformed, v, in_c, out_c, &mut products) };
-            } else {
-                for oc in 0..out_c {
-                    let m = &mut products[oc * 16..(oc + 1) * 16];
+            || (vec![0.0; 16 * in_c * TILE_BLOCK], vec![0.0; 16 * TILE_BLOCK * out_c]),
+            |(v, products), (block, dst)| {
+                let tile0 = block * TILE_BLOCK;
+                let active = (tiles - tile0).min(TILE_BLOCK);
+                for local_tile in 0..active {
+                    let tile = tile0 + local_tile;
+                    let ty = tile / tiles_x;
+                    let tx = tile % tiles_x;
+                    let y = ty * 2;
+                    let x = tx * 2;
                     for ic in 0..in_c {
-                        let u = &transformed[(oc * in_c + ic) * 16..(oc * in_c + ic + 1) * 16];
-                        let vv = &v[ic * 16..(ic + 1) * 16];
-                        for p in 0..16 { m[p] += u[p] * vv[p]; }
+                        let mut d = [0.0; 16];
+                        for dy in 0..4 {
+                            let sy = y as isize + dy as isize - 1;
+                            for dx in 0..4 {
+                                let sx = x as isize + dx as isize - 1;
+                                d[dy * 4 + dx] = if sy >= 0 && sy < ih as isize && sx >= 0 && sx < iw as isize {
+                                    input[(ic * ih + sy as usize) * iw + sx as usize]
+                                } else { 0.0 };
+                            }
+                        }
+                        let mut column = [0.0; 16];
+                        for j in 0..4 {
+                            let (a, b, c, d3) = (d[j], d[4 + j], d[8 + j], d[12 + j]);
+                            column[j] = a - c;
+                            column[4 + j] = b + c;
+                            column[8 + j] = c - b;
+                            column[12 + j] = b - d3;
+                        }
+                        for i in 0..4 {
+                            let (a, b, c, d3) = (column[i * 4], column[i * 4 + 1], column[i * 4 + 2], column[i * 4 + 3]);
+                            v[(i * 4) * in_c * active + ic * active + local_tile] = a - c;
+                            v[(i * 4 + 1) * in_c * active + ic * active + local_tile] = b + c;
+                            v[(i * 4 + 2) * in_c * active + ic * active + local_tile] = c - b;
+                            v[(i * 4 + 3) * in_c * active + ic * active + local_tile] = b - d3;
+                        }
                     }
                 }
-            }
-            #[cfg(not(target_arch = "x86_64"))]
-            for oc in 0..out_c {
-                let m = &mut products[oc * 16..(oc + 1) * 16];
-                for ic in 0..in_c {
-                    let u = &transformed[(oc * in_c + ic) * 16..(oc * in_c + ic + 1) * 16];
-                    let vv = &v[ic * 16..(ic + 1) * 16];
-                    for p in 0..16 { m[p] += u[p] * vv[p]; }
+                products.fill(0.0);
+                let used_v = &v[..16 * in_c * active];
+                let used_products = &mut products[..16 * active * out_c];
+                let used_external = da3_kernels::winograd_f2_blocked_f32(
+                    &transformed, used_v, used_products, in_c, out_c, active,
+                );
+                if !used_external {
+                    for position in 0..16 {
+                        for local_tile in 0..active {
+                            for oc in 0..out_c {
+                                let mut sum = 0.0;
+                                for ic in 0..in_c {
+                                    sum += transformed[(position * in_c + ic) * out_c + oc]
+                                        * v[(position * in_c + ic) * active + local_tile];
+                                }
+                                products[(position * active + local_tile) * out_c + oc] = sum;
+                            }
+                        }
+                    }
                 }
-            }
-            for oc in 0..out_c {
-                let m = &products[oc * 16..(oc + 1) * 16];
-                let mut p = [0.0; 8];
-                for j in 0..4 {
-                    p[j] = m[j] + m[4 + j] + m[8 + j];
-                    p[4 + j] = m[4 + j] - m[8 + j] - m[12 + j];
+                for local_tile in 0..active {
+                    for oc in 0..out_c {
+                        let mut p = [0.0; 8];
+                        for j in 0..4 {
+                            p[j] = products[(j * active + local_tile) * out_c + oc]
+                                + products[((4 + j) * active + local_tile) * out_c + oc]
+                                + products[((8 + j) * active + local_tile) * out_c + oc];
+                            p[4 + j] = products[((4 + j) * active + local_tile) * out_c + oc]
+                                - products[((8 + j) * active + local_tile) * out_c + oc]
+                                - products[((12 + j) * active + local_tile) * out_c + oc];
+                        }
+                        let b = bias.map_or(0.0, |values| values[oc]);
+                        let values = &mut dst[local_tile * out_c * 4 + oc * 4..local_tile * out_c * 4 + oc * 4 + 4];
+                        values[0] = p[0] + p[1] + p[2] + b;
+                        values[1] = p[1] - p[2] - p[3] + b;
+                        values[2] = p[4] + p[5] + p[6] + b;
+                        values[3] = p[5] - p[6] - p[7] + b;
+                    }
                 }
-                let b = bias.map_or(0.0, |values| values[oc]);
-                let values = &mut dst[oc * 4..oc * 4 + 4];
-                values[0] = p[0] + p[1] + p[2] + b;
-                values[1] = p[1] - p[2] - p[3] + b;
-                values[2] = p[4] + p[5] + p[6] + b;
-                values[3] = p[5] - p[6] - p[7] + b;
-            }
             },
         );
     // Output channels own disjoint NCHW planes. Parallelizing the scatter
