@@ -20,6 +20,38 @@ fn im2col(
     debug_assert_eq!(input.len(), in_c * ih * iw);
     debug_assert_eq!(col.len(), in_c * kh * kw * oh * ow);
     let out_spatial = oh * ow;
+    // Rows are independent.  The large high-resolution DPT convolutions
+    // materialize hundreds of MiB here, so distribute the copy while keeping
+    // each row's coordinate mapping and values exactly unchanged.
+    col.par_chunks_mut(out_spatial)
+        .enumerate()
+        .for_each(|(row_idx, row)| {
+            let c = row_idx / (kh * kw);
+            let kernel_idx = row_idx % (kh * kw);
+            let ky = kernel_idx / kw;
+            let kx = kernel_idx % kw;
+            let in_plane = &input[c * ih * iw..(c + 1) * ih * iw];
+            for oy in 0..oh {
+                let iy = oy as isize * stride as isize + ky as isize - pad as isize;
+                for ox in 0..ow {
+                    let ix = ox as isize * stride as isize + kx as isize - pad as isize;
+                    row[oy * ow + ox] = if iy >= 0 && iy < ih as isize && ix >= 0 && ix < iw as isize {
+                        in_plane[iy as usize * iw + ix as usize]
+                    } else {
+                        0.0
+                    };
+                }
+            }
+        });
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn im2col_serial(
+    input: &[f32], in_c: usize, ih: usize, iw: usize, kh: usize, kw: usize,
+    stride: usize, pad: usize, oh: usize, ow: usize, col: &mut [f32],
+) {
+    let out_spatial = oh * ow;
     for c in 0..in_c {
         let in_plane = &input[c * ih * iw..(c + 1) * ih * iw];
         for ky in 0..kh {
@@ -30,12 +62,9 @@ fn im2col(
                     let iy = oy as isize * stride as isize + ky as isize - pad as isize;
                     for ox in 0..ow {
                         let ix = ox as isize * stride as isize + kx as isize - pad as isize;
-                        let v = if iy >= 0 && iy < ih as isize && ix >= 0 && ix < iw as isize {
+                        row[oy * ow + ox] = if iy >= 0 && iy < ih as isize && ix >= 0 && ix < iw as isize {
                             in_plane[iy as usize * iw + ix as usize]
-                        } else {
-                            0.0
-                        };
-                        row[oy * ow + ox] = v;
+                        } else { 0.0 };
                     }
                 }
             }
@@ -482,6 +511,19 @@ mod tests {
             }
         }
         assert_eq!(fast, serial);
+    }
+
+    #[test]
+    fn parallel_im2col_is_bitwise_serial() {
+        let (in_c, ih, iw, kh, kw, stride, pad) = (3, 7, 9, 3, 3, 2, 1);
+        let (oh, ow) = ((ih + 2 * pad - kh) / stride + 1, (iw + 2 * pad - kw) / stride + 1);
+        let mut rng = Xorshift32(0x1A2C_0001); // deterministic test seed
+        let input = random_vec(&mut rng, in_c * ih * iw);
+        let mut parallel = vec![0.0; in_c * kh * kw * oh * ow];
+        let mut serial = vec![0.0; parallel.len()];
+        im2col(&input, in_c, ih, iw, kh, kw, stride, pad, oh, ow, &mut parallel);
+        im2col_serial(&input, in_c, ih, iw, kh, kw, stride, pad, oh, ow, &mut serial);
+        assert_eq!(parallel, serial);
     }
 
     /// Deterministischer, dependency-freier PRNG (Xorshift32) fuer reproduzierbare

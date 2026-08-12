@@ -1,6 +1,7 @@
 //! Scaled-dot-product attention: a naive GEMM+softmax+GEMM oracle and a
-//! GEMM-accelerated production implementation plus a tiled online-softmax
-//! reference used for validation.
+//! tiled, online-softmax implementation.
+
+use rayon::prelude::*;
 
 /// Naive reference: per head, `softmax(Q @ K^T / sqrt(head_dim)) @ V`.
 ///
@@ -58,7 +59,6 @@ pub fn attention_naive(
     }
 }
 
-#[cfg(test)]
 const KV_TILE: usize = 64;
 
 /// Tiled online-softmax attention.  Every `(head, query)` row is independent,
@@ -79,59 +79,28 @@ pub fn attention(
     assert_eq!(out.len(), heads * n * head_dim);
 
     let scale = 1.0f32 / (head_dim as f32).sqrt();
-    for h in 0..heads {
-        let base = h * n * head_dim;
-        let qh = &q[base..base + n * head_dim];
-        let kh = &k[base..base + n * head_dim];
-        let vh = &v[base..base + n * head_dim];
-        let oh = &mut out[base..base + n * head_dim];
-        let mut scores = vec![0.0; n * n];
-        matmul_qk_transposed(qh, kh, n, head_dim, &mut scores);
-        for score in &mut scores {
-            *score *= scale;
-        }
-        da_kernels_softmax_rows(&mut scores, n);
-        matmul(scores.as_slice(), vh, n, head_dim, n, oh);
-    }
-}
-
-fn matmul_qk_transposed(q: &[f32], k: &[f32], n: usize, head_dim: usize, out: &mut [f32]) {
-    let q =
-        unsafe { faer::mat::from_raw_parts::<f32>(q.as_ptr(), n, head_dim, head_dim as isize, 1) };
-    // K is row-major `[n, head_dim]`; this is its `[head_dim, n]` transpose
-    // view, not an allocation or layout conversion.
-    let kt =
-        unsafe { faer::mat::from_raw_parts::<f32>(k.as_ptr(), head_dim, n, 1, head_dim as isize) };
-    let out =
-        unsafe { faer::mat::from_raw_parts_mut::<f32>(out.as_mut_ptr(), n, n, n as isize, 1) };
-    faer::linalg::matmul::matmul(out, q, kt, None, 1.0, faer::get_global_parallelism());
-}
-
-fn matmul(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) {
-    let a = unsafe { faer::mat::from_raw_parts::<f32>(a.as_ptr(), m, k, k as isize, 1) };
-    let b = unsafe { faer::mat::from_raw_parts::<f32>(b.as_ptr(), k, n, n as isize, 1) };
-    let out =
-        unsafe { faer::mat::from_raw_parts_mut::<f32>(out.as_mut_ptr(), m, n, n as isize, 1) };
-    faer::linalg::matmul::matmul(out, a, b, None, 1.0, faer::get_global_parallelism());
-}
-
-fn da_kernels_softmax_rows(values: &mut [f32], cols: usize) {
-    for row in values.chunks_exact_mut(cols) {
-        let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let mut sum = 0.0;
-        for value in row.iter_mut() {
-            *value = (*value - max).exp();
-            sum += *value;
-        }
-        let inv_sum = 1.0 / sum;
-        for value in row.iter_mut() {
-            *value *= inv_sum;
-        }
-    }
+    out.par_chunks_mut(head_dim).enumerate().for_each_init(
+        || vec![0.0; head_dim],
+        |acc, (row, oi)| {
+            let h = row / n;
+            let i = row % n;
+            let base = h * n * head_dim;
+            attention_row(
+                &q[base..base + n * head_dim],
+                &k[base..base + n * head_dim],
+                &v[base..base + n * head_dim],
+                i,
+                n,
+                head_dim,
+                scale,
+                acc,
+                oi,
+            );
+        },
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
 fn attention_row(
     qh: &[f32],
     kh: &[f32],
@@ -235,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn gemm_attention_matches_online_attention() {
+    fn parallel_attention_is_bitwise_serial_per_row() {
         let (heads, n, dim) = (3, 71, 16);
         let q = values(heads * n * dim, 0xA771_0001);
         let k = values(heads * n * dim, 0xA771_0002);
@@ -244,8 +213,6 @@ mod tests {
         let mut serial = vec![0.0; heads * n * dim];
         attention(&q, &k, &v, heads, n, dim, &mut parallel);
         attention_serial(&q, &k, &v, heads, n, dim, &mut serial);
-        for (gemm, online) in parallel.iter().zip(serial.iter()) {
-            assert!((gemm - online).abs() < 1e-4, "gemm={gemm} online={online}");
-        }
+        assert_eq!(parallel, serial);
     }
 }
