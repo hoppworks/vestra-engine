@@ -118,6 +118,15 @@ fn run_linear(
         .get_f32(b_name)
         .unwrap_or_else(|| panic!("Weights missing f32 entry {b_name:?}"));
     let mut out = vec![0.0; m * n];
+    if !gelu {
+        if let Some(name) = ls_name {
+            if let Some(gamma) = weights.get_f32(name) {
+                if da_kernels::linear_bias_scale_f32_da3_base(m, n, k, x_in, weight, bias, gamma, &mut out) {
+                    return out;
+                }
+            }
+        }
+    }
     Da3ProjectionGemm.gemm(m, n, k, x_in, weight, &mut out);
     da_kernels::scalar::add_bias_rows(&mut out, m, n, bias);
     if gelu {

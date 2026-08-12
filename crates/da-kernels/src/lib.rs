@@ -22,3 +22,7 @@ pub fn qkv_f32_da3_base(
 ) -> bool {
     da3_kernels::qkv_f32_da3_base(input, weight, bias, q, k, v)
 }
+
+pub fn linear_bias_scale_f32_da3_base(m: usize, n: usize, k: usize, a: &[f32], b: &[f32], bias: &[f32], scale: &[f32], c: &mut [f32]) -> bool {
+    da3_kernels::linear_bias_scale_f32_da3_base(m, n, k, a, b, bias, scale, c)
+}
