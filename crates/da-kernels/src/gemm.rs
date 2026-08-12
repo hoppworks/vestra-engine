@@ -14,22 +14,43 @@ impl Gemm for ScalarGemm {
 pub struct FaerGemm;
 impl Gemm for FaerGemm {
     fn gemm(&self, m: usize, n: usize, k: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
-        debug_assert_eq!(a.len(), m*k); debug_assert_eq!(b.len(), k*n); debug_assert_eq!(c.len(), m*n);
-        use faer::Parallelism;
+        debug_assert_eq!(a.len(), m * k);
+        debug_assert_eq!(b.len(), k * n);
+        debug_assert_eq!(c.len(), m * n);
         // row-major Slices als faer-Views mit expliziten Strides interpretieren.
         let a = unsafe { faer::mat::from_raw_parts::<f32>(a.as_ptr(), m, k, k as isize, 1) };
         let b = unsafe { faer::mat::from_raw_parts::<f32>(b.as_ptr(), k, n, n as isize, 1) };
-        let cm = unsafe { faer::mat::from_raw_parts_mut::<f32>(c.as_mut_ptr(), m, n, n as isize, 1) };
-        faer::linalg::matmul::matmul(cm, a, b, None, 1.0, Parallelism::None);
+        let cm =
+            unsafe { faer::mat::from_raw_parts_mut::<f32>(c.as_mut_ptr(), m, n, n as isize, 1) };
+        // Respect faer's process-wide parallelism setting.  The previous
+        // `Parallelism::None` hard-coded every model GEMM to one core even when
+        // the benchmark fixed RAYON_NUM_THREADS (and the C++/PyTorch runners)
+        // to a larger, identical thread count.
+        faer::linalg::matmul::matmul(cm, a, b, None, 1.0, faer::get_global_parallelism());
     }
 }
 
-pub struct GemmWithEpilogue<G: Gemm> { pub inner: G }
+pub struct GemmWithEpilogue<G: Gemm> {
+    pub inner: G,
+}
 impl<G: Gemm> GemmWithEpilogue<G> {
-    pub fn gemm_bias_gelu(&self, m: usize, n: usize, k: usize, a: &[f32], b: &[f32],
-                          bias: Option<&[f32]>, gelu: bool, c: &mut [f32]) {
+    pub fn gemm_bias_gelu(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[f32],
+        bias: Option<&[f32]>,
+        gelu: bool,
+        c: &mut [f32],
+    ) {
         self.inner.gemm(m, n, k, a, b, c);
-        if let Some(bias) = bias { scalar::add_bias_rows(c, m, n, bias); }
-        if gelu { scalar::gelu(c); }
+        if let Some(bias) = bias {
+            scalar::add_bias_rows(c, m, n, bias);
+        }
+        if gelu {
+            scalar::gelu(c);
+        }
     }
 }
