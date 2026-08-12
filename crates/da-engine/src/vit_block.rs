@@ -118,6 +118,12 @@ fn run_linear(
         .get_f32(b_name)
         .unwrap_or_else(|| panic!("Weights missing f32 entry {b_name:?}"));
     let mut out = vec![0.0; m * n];
+    if gelu
+        && ls_name.is_none()
+        && da_kernels::linear_bias_gelu_f32_da3_base(m, n, k, x_in, weight, bias, &mut out)
+    {
+        return out;
+    }
     if !gelu {
         if let Some(name) = ls_name {
             if let Some(gamma) = weights.get_f32(name) {
