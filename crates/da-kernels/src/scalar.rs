@@ -59,12 +59,51 @@ pub fn add_bias_rows(x: &mut [f32], rows: usize, cols: usize, bias: &[f32]) {
 
 pub fn layernorm(x: &mut [f32], rows: usize, cols: usize, gamma: &[f32], beta: &[f32], eps: f32) {
     debug_assert_eq!(x.len(), rows*cols);
-    for r in 0..rows {
-        let row = &mut x[r*cols..(r+1)*cols];
-        let mean = row.iter().sum::<f32>() / cols as f32;
-        let var = row.iter().map(|v| { let d = v - mean; d*d }).sum::<f32>() / cols as f32;
-        let inv = 1.0 / (var + eps).sqrt();
-        for c in 0..cols { row[c] = (row[c] - mean) * inv * gamma[c] + beta[c]; }
+    // Rows are independent and each keeps the exact scalar reduction order.
+    // This is particularly important for Q/K normalization, which has over
+    // ten thousand short rows per late DA3-BASE transformer block.
+    if rows >= 32 {
+        x.par_chunks_mut(cols)
+            .for_each(|row| layernorm_row(row, gamma, beta, eps));
+    } else {
+        for row in x.chunks_mut(cols) {
+            layernorm_row(row, gamma, beta, eps);
+        }
+    }
+}
+
+#[inline]
+fn layernorm_row(row: &mut [f32], gamma: &[f32], beta: &[f32], eps: f32) {
+    let cols = row.len();
+    let mean = row.iter().sum::<f32>() / cols as f32;
+    let var = row.iter().map(|v| { let d = v - mean; d*d }).sum::<f32>() / cols as f32;
+    let inv = 1.0 / (var + eps).sqrt();
+    for c in 0..cols { row[c] = (row[c] - mean) * inv * gamma[c] + beta[c]; }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{layernorm, layernorm_row};
+
+    #[test]
+    fn parallel_layernorm_is_bitwise_identical_per_row() {
+        let rows = 67;
+        let cols = 64;
+        let gamma: Vec<f32> = (0..cols).map(|i| 0.1 + i as f32 * 0.01).collect();
+        let beta: Vec<f32> = (0..cols).map(|i| -0.2 + i as f32 * 0.02).collect();
+        let mut parallel: Vec<f32> = (0..rows * cols)
+            .map(|i| ((i * 37 % 101) as f32 - 50.0) * 0.03125)
+            .collect();
+        let mut sequential = parallel.clone();
+
+        layernorm(&mut parallel, rows, cols, &gamma, &beta, 1e-5);
+        for row in sequential.chunks_mut(cols) {
+            layernorm_row(row, &gamma, &beta, 1e-5);
+        }
+        assert_eq!(
+            parallel.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            sequential.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+        );
     }
 }
 
@@ -105,3 +144,4 @@ pub fn softmax_rows(x: &mut [f32], rows: usize, cols: usize) {
         for v in row.iter_mut() { *v *= inv; }
     }
 }
+use rayon::prelude::*;
