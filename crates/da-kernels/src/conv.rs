@@ -12,6 +12,28 @@ struct WinogradFilterKey {
 
 static WINOGRAD_FILTERS: OnceLock<Mutex<HashMap<WinogradFilterKey, Arc<[f32]>>>> = OnceLock::new();
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,fma")]
+unsafe fn winograd_accumulate_avx512(
+    transformed: &[f32],
+    v: &[f32],
+    in_c: usize,
+    out_c: usize,
+    dst: &mut [f32],
+) {
+    use core::arch::x86_64::*;
+    debug_assert_eq!(dst.len(), out_c * 16);
+    for oc in 0..out_c {
+        let mut acc = _mm512_setzero_ps();
+        for ic in 0..in_c {
+            let u = unsafe { transformed.as_ptr().add((oc * in_c + ic) * 16) };
+            let x = unsafe { v.as_ptr().add(ic * 16) };
+            acc = unsafe { _mm512_fmadd_ps(_mm512_loadu_ps(u), _mm512_loadu_ps(x), acc) };
+        }
+        unsafe { _mm512_storeu_ps(dst.as_mut_ptr().add(oc * 16), acc) };
+    }
+}
+
 fn winograd_filter_key(weight: &[f32], in_c: usize, out_c: usize) -> WinogradFilterKey {
     // The model weights are immutable.  Hashing their exact F32 bit patterns
     // makes cache reuse safe across separately loaded models as well.
@@ -152,13 +174,36 @@ fn conv3x3_winograd_f2(
                     d[i * 4 + 3] = b - d3;
                 }
             }
+            let mut products = vec![0.0; out_c * 16];
+            #[cfg(target_arch = "x86_64")]
+            let use_avx512 = std::is_x86_feature_detected!("avx512f")
+                && std::is_x86_feature_detected!("fma");
+            #[cfg(target_arch = "x86_64")]
+            if use_avx512 {
+                // SAFETY: runtime ISA check; all transformed Winograd rows
+                // and tiles contain exactly sixteen F32 coefficients.
+                unsafe { winograd_accumulate_avx512(&transformed, v, in_c, out_c, &mut products) };
+            } else {
+                for oc in 0..out_c {
+                    let m = &mut products[oc * 16..(oc + 1) * 16];
+                    for ic in 0..in_c {
+                        let u = &transformed[(oc * in_c + ic) * 16..(oc * in_c + ic + 1) * 16];
+                        let vv = &v[ic * 16..(ic + 1) * 16];
+                        for p in 0..16 { m[p] += u[p] * vv[p]; }
+                    }
+                }
+            }
+            #[cfg(not(target_arch = "x86_64"))]
             for oc in 0..out_c {
-                let mut m = [0.0; 16];
+                let m = &mut products[oc * 16..(oc + 1) * 16];
                 for ic in 0..in_c {
                     let u = &transformed[(oc * in_c + ic) * 16..(oc * in_c + ic + 1) * 16];
                     let vv = &v[ic * 16..(ic + 1) * 16];
                     for p in 0..16 { m[p] += u[p] * vv[p]; }
                 }
+            }
+            for oc in 0..out_c {
+                let m = &products[oc * 16..(oc + 1) * 16];
                 let mut p = [0.0; 8];
                 for j in 0..4 {
                     p[j] = m[j] + m[4 + j] + m[8 + j];
