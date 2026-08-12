@@ -72,6 +72,26 @@ pub fn conv2d(
 
     let k = in_c * kh * kw;
     let n = oh * ow;
+    // For a 1x1 stride-1 no-padding convolution the im2col matrix is
+    // exactly the existing NCHW input viewed as `[in_c, ih*iw]`.  Building
+    // and filling a duplicate matrix only adds an allocation and a full
+    // memory pass; use the input directly while preserving the same GEMM
+    // operand order and F32 accumulation.
+    if kh == 1 && kw == 1 && stride == 1 && pad == 0 {
+        debug_assert_eq!(n, ih * iw);
+        gemm.gemm(out_c, n, k, weight, input, out);
+        if let Some(bias) = bias {
+            debug_assert_eq!(bias.len(), out_c);
+            for oc in 0..out_c {
+                let row = &mut out[oc * n..(oc + 1) * n];
+                let b = bias[oc];
+                for value in row {
+                    *value += b;
+                }
+            }
+        }
+        return;
+    }
     let mut col = vec![0f32; k * n];
     im2col(input, in_c, ih, iw, kh, kw, stride, pad, oh, ow, &mut col);
 
@@ -238,6 +258,42 @@ mod tests {
             &input, in_c, ih, iw, &weight, out_c, 1, 1, 1, 0, Some(&bias), &mut out_naive,
         );
         assert_eq!(out, out_naive);
+    }
+
+    #[test]
+    fn conv2d_1x1_fast_path_is_bitwise_generic_im2col() {
+        let (in_c, out_c, ih, iw) = (5, 7, 4, 3);
+        let mut rng = Xorshift32(0x1A11_C011);
+        let input = random_vec(&mut rng, in_c * ih * iw);
+        let weight = random_vec(&mut rng, out_c * in_c);
+        let bias = random_vec(&mut rng, out_c);
+        let mut fast = vec![0.0; out_c * ih * iw];
+        conv2d(
+            &input,
+            in_c,
+            ih,
+            iw,
+            &weight,
+            out_c,
+            1,
+            1,
+            1,
+            0,
+            Some(&bias),
+            &ScalarGemm,
+            &mut fast,
+        );
+
+        let mut col = vec![0.0; in_c * ih * iw];
+        im2col(&input, in_c, ih, iw, 1, 1, 1, 0, ih, iw, &mut col);
+        let mut generic = vec![0.0; out_c * ih * iw];
+        ScalarGemm.gemm(out_c, ih * iw, in_c, &weight, &col, &mut generic);
+        for oc in 0..out_c {
+            for value in &mut generic[oc * ih * iw..(oc + 1) * ih * iw] {
+                *value += bias[oc];
+            }
+        }
+        assert_eq!(fast, generic);
     }
 
     #[test]
