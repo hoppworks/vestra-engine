@@ -1,7 +1,7 @@
 use crate::ModelConfig;
 use da_graph::Weights;
 use da_kernels::conv::conv2d;
-use da_kernels::gemm::ScalarGemm;
+use da_kernels::gemm::FaerGemm;
 
 /// Weight-tensor names for the conv-patchify projection.
 ///
@@ -52,8 +52,16 @@ pub fn patch_embed(
         CHANNELS * h * w,
         "img_nchw length must be 3*h*w (NCHW, batch=1)"
     );
-    assert_eq!(h % patch, 0, "h ({h}) must be a multiple of patch_size ({patch})");
-    assert_eq!(w % patch, 0, "w ({w}) must be a multiple of patch_size ({patch})");
+    assert_eq!(
+        h % patch,
+        0,
+        "h ({h}) must be a multiple of patch_size ({patch})"
+    );
+    assert_eq!(
+        w % patch,
+        0,
+        "w ({w}) must be a multiple of patch_size ({patch})"
+    );
 
     let weight = weights
         .get_f32(PATCH_EMBED_WEIGHT)
@@ -66,7 +74,11 @@ pub fn patch_embed(
         embed * CHANNELS * patch * patch,
         "{PATCH_EMBED_WEIGHT} shape mismatch: expected embed_dim*3*patch*patch"
     );
-    assert_eq!(bias.len(), embed, "{PATCH_EMBED_BIAS} shape mismatch: expected embed_dim");
+    assert_eq!(
+        bias.len(),
+        embed,
+        "{PATCH_EMBED_BIAS} shape mismatch: expected embed_dim"
+    );
 
     let gh = h / patch;
     let gw = w / patch;
@@ -86,7 +98,7 @@ pub fn patch_embed(
         patch, // stride == kernel size: non-overlapping patchify
         0,     // pad
         Some(bias),
-        &ScalarGemm,
+        &FaerGemm,
         &mut conv_out,
     );
 
