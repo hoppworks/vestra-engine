@@ -1,4 +1,5 @@
 use crate::gemm::Gemm;
+use rayon::prelude::*;
 
 /// im2col: expandiert `input` (NCHW, N=1) zu einer `(out_c_rows=kh*kw*in_c) x (oh*ow)`
 /// Spaltenmatrix, sodass `conv2d` als eine einzige GEMM (`weight_mat @ col`) berechnet
@@ -194,6 +195,40 @@ pub fn conv_transpose2d(
     let oh = (ih - 1) * stride + kh;
     let ow = (iw - 1) * stride + kw;
     debug_assert_eq!(out.len(), out_c * oh * ow);
+
+    // The DPT resize layers use kernel == stride with no padding.  Each input
+    // spatial location therefore owns a disjoint output tile, so output
+    // channels can be computed independently.  Keep the inner input-channel
+    // accumulation order identical to the serial scatter path below.
+    if kh == stride && kw == stride {
+        out.par_chunks_mut(oh * ow)
+            .enumerate()
+            .for_each(|(oc, plane)| {
+                for iy in 0..ih {
+                    for ix in 0..iw {
+                        for ky in 0..kh {
+                            let oy = iy * stride + ky;
+                            for kx in 0..kw {
+                                let ox = ix * stride + kx;
+                                let mut sum = 0.0;
+                                for ic in 0..in_c {
+                                    let iv = input[(ic * ih + iy) * iw + ix];
+                                    let wv = weight[((ic * out_c + oc) * kh + ky) * kw + kx];
+                                    sum += iv * wv;
+                                }
+                                plane[oy * ow + ox] = sum;
+                            }
+                        }
+                    }
+                }
+                if let Some(bias) = bias {
+                    for value in plane {
+                        *value += bias[oc];
+                    }
+                }
+            });
+        return;
+    }
 
     out.fill(0.0);
     for ic in 0..in_c {
@@ -400,6 +435,53 @@ mod tests {
                 out_naive[i]
             );
         }
+    }
+
+    #[test]
+    fn nonoverlap_transpose_fast_path_is_bitwise_serial_scatter() {
+        let (in_c, out_c, ih, iw, kernel) = (3, 4, 3, 2, 2);
+        let mut rng = Xorshift32(0x7A4E_0001);
+        let input = random_vec(&mut rng, in_c * ih * iw);
+        let weight = random_vec(&mut rng, in_c * out_c * kernel * kernel);
+        let bias = random_vec(&mut rng, out_c);
+        let (oh, ow) = (ih * kernel, iw * kernel);
+        let mut fast = vec![0.0; out_c * oh * ow];
+        conv_transpose2d(
+            &input,
+            in_c,
+            ih,
+            iw,
+            &weight,
+            out_c,
+            kernel,
+            kernel,
+            kernel,
+            Some(&bias),
+            &mut fast,
+        );
+
+        let mut serial = vec![0.0; out_c * oh * ow];
+        for ic in 0..in_c {
+            for iy in 0..ih {
+                for ix in 0..iw {
+                    let iv = input[(ic * ih + iy) * iw + ix];
+                    for oc in 0..out_c {
+                        for ky in 0..kernel {
+                            for kx in 0..kernel {
+                                serial[(oc * oh + iy * kernel + ky) * ow + ix * kernel + kx] +=
+                                    iv * weight[((ic * out_c + oc) * kernel + ky) * kernel + kx];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for oc in 0..out_c {
+            for value in &mut serial[oc * oh * ow..(oc + 1) * oh * ow] {
+                *value += bias[oc];
+            }
+        }
+        assert_eq!(fast, serial);
     }
 
     /// Deterministischer, dependency-freier PRNG (Xorshift32) fuer reproduzierbare
