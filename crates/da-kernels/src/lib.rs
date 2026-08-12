@@ -37,3 +37,29 @@ pub fn linear_bias_gelu_f32_da3_base(
     c: &mut [f32],
 ) -> bool {
     da3_kernels::linear_bias_gelu_f32_da3_base(m, n, k, a, b, bias, c)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn qk_norm_rope_f32_da3_base(
+    q: &mut [f32],
+    k: &mut [f32],
+    q_gamma: &[f32],
+    q_beta: &[f32],
+    k_gamma: &[f32],
+    k_beta: &[f32],
+    positions_yx: &[i64],
+    frequency: f32,
+    epsilon: f32,
+) -> bool {
+    da3_kernels::qk_norm_rope_f32_da3_base(
+        q,
+        k,
+        q_gamma,
+        q_beta,
+        k_gamma,
+        k_beta,
+        positions_yx,
+        frequency,
+        epsilon,
+    )
+}

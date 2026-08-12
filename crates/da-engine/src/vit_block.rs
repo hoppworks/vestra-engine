@@ -241,6 +241,7 @@ fn run_attention(
     };
 
     let position_started = std::time::Instant::now();
+    let mut used_fused_qk_norm_rope = false;
     if use_qknorm {
         let q_gamma = weights
             .get_f32(&qn_w)
@@ -257,10 +258,40 @@ fn run_attention(
         let k_beta = weights
             .get_f32(&k_beta_name)
             .unwrap_or_else(|| panic!("Weights missing f32 entry {k_beta_name:?}"));
-        da_kernels::scalar::layernorm(&mut q, heads * n, head_dim, q_gamma, q_beta, QK_NORM_EPS);
-        da_kernels::scalar::layernorm(&mut k, heads * n, head_dim, k_gamma, k_beta, QK_NORM_EPS);
+        if use_rope {
+            let positions: Vec<i64> = pos_yx.iter().map(|&value| value as i64).collect();
+            used_fused_qk_norm_rope = da_kernels::qk_norm_rope_f32_da3_base(
+                &mut q,
+                &mut k,
+                q_gamma,
+                q_beta,
+                k_gamma,
+                k_beta,
+                &positions,
+                cfg.rope_freq,
+                QK_NORM_EPS,
+            );
+        }
+        if !used_fused_qk_norm_rope {
+            da_kernels::scalar::layernorm(
+                &mut q,
+                heads * n,
+                head_dim,
+                q_gamma,
+                q_beta,
+                QK_NORM_EPS,
+            );
+            da_kernels::scalar::layernorm(
+                &mut k,
+                heads * n,
+                head_dim,
+                k_gamma,
+                k_beta,
+                QK_NORM_EPS,
+            );
+        }
     }
-    if use_rope {
+    if use_rope && !used_fused_qk_norm_rope {
         let positions: Vec<i64> = pos_yx.iter().map(|&value| value as i64).collect();
         da_kernels::rope2d(&mut q, heads, n, head_dim, &positions, cfg.rope_freq);
         da_kernels::rope2d(&mut k, heads, n, head_dim, &positions, cfg.rope_freq);
