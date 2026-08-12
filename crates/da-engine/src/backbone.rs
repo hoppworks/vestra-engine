@@ -87,7 +87,11 @@ pub struct Backbone<'a> {
 
 impl<'a> Backbone<'a> {
     pub fn new(cfg: &'a ModelConfig, weights: &'a Weights, backend: &'a dyn Backend) -> Self {
-        Backbone { cfg, weights, backend }
+        Backbone {
+            cfg,
+            weights,
+            backend,
+        }
     }
 
     /// Runs `cfg.depth` `vit_block` calls over `tokens` in place (applying
@@ -104,10 +108,21 @@ impl<'a> Backbone<'a> {
     ///
     /// `out_layers` order determines the order of `BackboneOutputs.feats`/
     /// `.cam_tokens` (matching callers' listed order, not execution order).
-    pub fn forward(&self, tokens: &mut [f32], gh: usize, gw: usize, out_layers: &[i32]) -> BackboneOutputs {
+    pub fn forward(
+        &self,
+        tokens: &mut [f32],
+        gh: usize,
+        gw: usize,
+        out_layers: &[i32],
+    ) -> BackboneOutputs {
+        let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
         let cfg = self.cfg;
         let embed = cfg.embed_dim as usize;
-        assert_eq!(tokens.len() % embed, 0, "tokens length must be a multiple of embed_dim");
+        assert_eq!(
+            tokens.len() % embed,
+            0,
+            "tokens length must be a multiple of embed_dim"
+        );
         let n = tokens.len() / embed;
         let n_special = 1 + cfg.num_register as usize;
         assert!(
@@ -121,10 +136,11 @@ impl<'a> Backbone<'a> {
         // reference's `local_x = x` initialization before the loop).
         let mut local_x: Vec<f32> = tokens.to_vec();
 
-        let mut raw_local: Vec<Option<Vec<f32>>> = vec![None; out_layers.len()];
-        let mut raw_x: Vec<Option<Vec<f32>>> = vec![None; out_layers.len()];
+        let mut feats: Vec<Option<Vec<f32>>> = vec![None; out_layers.len()];
+        let mut cam_tokens: Vec<Option<Vec<f32>>> = vec![None; out_layers.len()];
 
         for layer_idx in 0..cfg.depth as usize {
+            let block_started = std::time::Instant::now();
             // Camera-token overwrite BEFORE block i==alt_start: token-0
             // (CLS slot, row 0) <- vit.camera_token[0..embed].
             if cfg.alt_start >= 0 && layer_idx == cfg.alt_start as usize {
@@ -140,34 +156,117 @@ impl<'a> Backbone<'a> {
                 tokens[0..embed].copy_from_slice(&cam[0..embed]);
             }
 
-            let global = cfg.alt_start >= 0 && (layer_idx as i32) >= cfg.alt_start && layer_idx % 2 == 1;
+            let global =
+                cfg.alt_start >= 0 && (layer_idx as i32) >= cfg.alt_start && layer_idx % 2 == 1;
 
-            vit_block(tokens, n, gh, gw, global, cfg, layer_idx, self.weights, self.backend);
+            vit_block(
+                tokens,
+                n,
+                gh,
+                gw,
+                global,
+                cfg,
+                layer_idx,
+                self.weights,
+                self.backend,
+            );
 
-            if !global {
-                local_x.copy_from_slice(tokens);
+            if phase_profile {
+                eprintln!(
+                    "phase: transformer_block[{layer_idx}]={:.3}ms global={global}",
+                    block_started.elapsed().as_secs_f64() * 1e3,
+                );
             }
 
             for (slot, &wanted) in out_layers.iter().enumerate() {
                 if wanted == layer_idx as i32 {
-                    raw_local[slot] = Some(local_x.clone());
-                    raw_x[slot] = Some(tokens.to_vec());
+                    let local = if global { &local_x } else { &*tokens };
+                    let (feat, cam) = self.post_process_capture(n, n_special, local, tokens);
+                    feats[slot] = Some(feat);
+                    cam_tokens[slot] = Some(cam);
                 }
+            }
+
+            // `local_x` is only consumed by the immediately following global
+            // block. Avoid a full token-buffer copy after local blocks that
+            // cannot feed such a capture.
+            let next_is_global = layer_idx + 1 < cfg.depth as usize
+                && cfg.alt_start >= 0
+                && (layer_idx + 1) as i32 >= cfg.alt_start
+                && (layer_idx + 1) % 2 == 1;
+            if !global && next_is_global {
+                local_x.copy_from_slice(tokens);
             }
         }
 
-        let raw_local: Vec<Vec<f32>> = raw_local
+        let feats: Vec<Vec<f32>> = feats
             .into_iter()
             .enumerate()
-            .map(|(i, c)| c.unwrap_or_else(|| panic!("out_layers[{i}]={} was never reached (depth={})", out_layers[i], cfg.depth)))
+            .map(|(i, c)| {
+                c.unwrap_or_else(|| {
+                    panic!(
+                        "out_layers[{i}]={} was never reached (depth={})",
+                        out_layers[i], cfg.depth
+                    )
+                })
+            })
             .collect();
-        let raw_x: Vec<Vec<f32>> = raw_x
+        let cam_tokens: Vec<Vec<f32>> = cam_tokens
             .into_iter()
             .enumerate()
-            .map(|(i, c)| c.unwrap_or_else(|| panic!("out_layers[{i}]={} was never reached (depth={})", out_layers[i], cfg.depth)))
+            .map(|(i, c)| {
+                c.unwrap_or_else(|| {
+                    panic!(
+                        "out_layers[{i}]={} was never reached (depth={})",
+                        out_layers[i], cfg.depth
+                    )
+                })
+            })
             .collect();
 
-        self.post_process(n, n_special, &raw_local, &raw_x)
+        BackboneOutputs { feats, cam_tokens }
+    }
+
+    fn post_process_capture(
+        &self,
+        n: usize,
+        n_special: usize,
+        local_x: &[f32],
+        x: &[f32],
+    ) -> (Vec<f32>, Vec<f32>) {
+        let cfg = self.cfg;
+        let embed = cfg.embed_dim as usize;
+        let n_patch = n - n_special;
+        let nw = self
+            .weights
+            .get_f32(VIT_NORM_WEIGHT)
+            .unwrap_or_else(|| panic!("missing weight tensor {VIT_NORM_WEIGHT:?}"));
+        let nb = self
+            .weights
+            .get_f32(VIT_NORM_BIAS)
+            .unwrap_or_else(|| panic!("missing weight tensor {VIT_NORM_BIAS:?}"));
+
+        if !cfg.cat_token {
+            let cam = x[0..embed].to_vec();
+            let mut feat = x[n_special * embed..n * embed].to_vec();
+            da_kernels::scalar::layernorm(&mut feat, n_patch, embed, nw, nb, cfg.ln_eps);
+            return (feat, cam);
+        }
+
+        let mut cam = Vec::with_capacity(2 * embed);
+        cam.extend_from_slice(&local_x[0..embed]);
+        cam.extend_from_slice(&x[0..embed]);
+        let mut normed_x = x[n_special * embed..n * embed].to_vec();
+        da_kernels::scalar::layernorm(&mut normed_x, n_patch, embed, nw, nb, cfg.ln_eps);
+        let mut feat = vec![0f32; n_patch * 2 * embed];
+        for t in 0..n_patch {
+            let lrow = &local_x[(n_special + t) * embed..(n_special + t + 1) * embed];
+            let nrow = &normed_x[t * embed..(t + 1) * embed];
+            let dst = &mut feat[t * 2 * embed..(t + 1) * 2 * embed];
+            dst[0..embed].copy_from_slice(lrow);
+            dst[embed..2 * embed].copy_from_slice(nrow);
+        }
+        (feat, cam)
     }
 
     /// Host post-process matching `get_intermediate_layers` / the C++
@@ -300,13 +399,37 @@ mod tests {
             put(format!("vit.blk.{layer_idx}.norm1.bias"), embed, &mut w);
             put(format!("vit.blk.{layer_idx}.norm2.weight"), embed, &mut w);
             put(format!("vit.blk.{layer_idx}.norm2.bias"), embed, &mut w);
-            put(format!("vit.blk.{layer_idx}.attn_qkv.weight"), embed * 3 * embed, &mut w);
-            put(format!("vit.blk.{layer_idx}.attn_qkv.bias"), 3 * embed, &mut w);
-            put(format!("vit.blk.{layer_idx}.attn_proj.weight"), embed * embed, &mut w);
+            put(
+                format!("vit.blk.{layer_idx}.attn_qkv.weight"),
+                embed * 3 * embed,
+                &mut w,
+            );
+            put(
+                format!("vit.blk.{layer_idx}.attn_qkv.bias"),
+                3 * embed,
+                &mut w,
+            );
+            put(
+                format!("vit.blk.{layer_idx}.attn_proj.weight"),
+                embed * embed,
+                &mut w,
+            );
             put(format!("vit.blk.{layer_idx}.attn_proj.bias"), embed, &mut w);
-            put(format!("vit.blk.{layer_idx}.mlp_fc1.weight"), embed * mlp_hidden, &mut w);
-            put(format!("vit.blk.{layer_idx}.mlp_fc1.bias"), mlp_hidden, &mut w);
-            put(format!("vit.blk.{layer_idx}.mlp_fc2.weight"), mlp_hidden * embed, &mut w);
+            put(
+                format!("vit.blk.{layer_idx}.mlp_fc1.weight"),
+                embed * mlp_hidden,
+                &mut w,
+            );
+            put(
+                format!("vit.blk.{layer_idx}.mlp_fc1.bias"),
+                mlp_hidden,
+                &mut w,
+            );
+            put(
+                format!("vit.blk.{layer_idx}.mlp_fc2.weight"),
+                mlp_hidden * embed,
+                &mut w,
+            );
             put(format!("vit.blk.{layer_idx}.mlp_fc2.bias"), embed, &mut w);
         }
         // vit.norm + camera_token, always inserted (harmless when
@@ -320,7 +443,10 @@ mod tests {
             rng2 ^= rng2 << 5;
             ((rng2 as f32) / (u32::MAX as f32)) * 2.0 - 1.0
         };
-        w.insert_f32("vit.camera_token".to_string(), (0..2 * embed).map(|_| next2()).collect::<Vec<f32>>());
+        w.insert_f32(
+            "vit.camera_token".to_string(),
+            (0..2 * embed).map(|_| next2()).collect::<Vec<f32>>(),
+        );
         w
     }
 

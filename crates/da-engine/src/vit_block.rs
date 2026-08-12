@@ -151,10 +151,12 @@ fn run_attention(
     layer_idx: usize,
     weights: &Weights,
 ) -> Vec<f32> {
+    let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
     let embed = cfg.embed_dim as usize;
     let heads = cfg.num_heads as usize;
     let head_dim = cfg.head_dim as usize;
 
+    let qkv_started = std::time::Instant::now();
     let qkv = run_linear(
         ln1_out,
         n,
@@ -166,6 +168,7 @@ fn run_attention(
         None,
         weights,
     );
+    let qkv_elapsed = qkv_started.elapsed();
 
     // Split the fused per-token [Q(embed)|K(embed)|V(embed)] row (each
     // embed-wide block itself [heads,head_dim] head-major) and transpose
@@ -173,6 +176,7 @@ fn run_attention(
     // the layout `Op::Attention` requires. Pure data movement, done in
     // host Rust rather than as a graph op (see module doc: reshape/permute
     // isn't part of the approved Op set this task touches).
+    let pack_started = std::time::Instant::now();
     let mut q = vec![0f32; heads * n * head_dim];
     let mut k = vec![0f32; heads * n * head_dim];
     let mut v = vec![0f32; heads * n * head_dim];
@@ -187,6 +191,7 @@ fn run_attention(
             }
         }
     }
+    let pack_elapsed = pack_started.elapsed();
 
     let qn_w = wname(layer_idx, "attn_qnorm.weight");
     let use_qknorm = cfg.qknorm_start >= 0
@@ -225,6 +230,7 @@ fn run_attention(
         Vec::new()
     };
 
+    let position_started = std::time::Instant::now();
     if use_qknorm {
         let q_gamma = weights
             .get_f32(&qn_w)
@@ -249,11 +255,15 @@ fn run_attention(
         da_kernels::rope2d(&mut q, heads, n, head_dim, &positions, cfg.rope_freq);
         da_kernels::rope2d(&mut k, heads, n, head_dim, &positions, cfg.rope_freq);
     }
+    let position_elapsed = position_started.elapsed();
+    let core_started = std::time::Instant::now();
     let mut attn_hnd = vec![0.0; heads * n * head_dim];
     da_kernels::attention(&q, &k, &v, heads, n, head_dim, &mut attn_hnd);
+    let core_elapsed = core_started.elapsed();
 
     // Transpose head-major [heads, n, head_dim] back to token-major
     // [n, embed] before the output projection.
+    let unpack_started = std::time::Instant::now();
     let mut attn_tok = vec![0f32; n * embed];
     for t in 0..n {
         for h in 0..heads {
@@ -262,8 +272,10 @@ fn run_attention(
             }
         }
     }
+    let unpack_elapsed = unpack_started.elapsed();
 
-    run_linear(
+    let projection_started = std::time::Instant::now();
+    let output = run_linear(
         &attn_tok,
         n,
         embed,
@@ -273,7 +285,19 @@ fn run_attention(
         false,
         Some(&wname(layer_idx, "ls1")),
         weights,
-    )
+    );
+    if phase_profile {
+        eprintln!(
+            "phase: attention[{layer_idx}] qkv={:.3}ms pack={:.3}ms qk_norm_rope={:.3}ms core={:.3}ms unpack={:.3}ms proj={:.3}ms",
+            qkv_elapsed.as_secs_f64() * 1e3,
+            pack_elapsed.as_secs_f64() * 1e3,
+            position_elapsed.as_secs_f64() * 1e3,
+            core_elapsed.as_secs_f64() * 1e3,
+            unpack_elapsed.as_secs_f64() * 1e3,
+            projection_started.elapsed().as_secs_f64() * 1e3,
+        );
+    }
+    output
 }
 
 /// Runs one DINOv2/DA3 ViT transformer block over `tokens` in place:
@@ -312,6 +336,7 @@ pub fn vit_block(
     weights: &Weights,
     _backend: &dyn Backend,
 ) {
+    let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
     assert_eq!(
         tokens.len(),
         n * cfg.embed_dim as usize,
@@ -334,6 +359,7 @@ pub fn vit_block(
     // operate on fresh Vec<f32> copies via their mini-graphs' own arenas),
     // so it still holds the pre-attention residual right up until the
     // in-place `da_kernels::scalar::add` below.
+    let ln1_started = std::time::Instant::now();
     let ln1 = run_layernorm(
         tokens,
         n,
@@ -343,10 +369,14 @@ pub fn vit_block(
         eps,
         weights,
     );
+    let ln1_elapsed = ln1_started.elapsed();
+    let attention_started = std::time::Instant::now();
     let attn_out = run_attention(&ln1, n, gh, gw, global, cfg, layer_idx, weights);
     da_kernels::scalar::add(tokens, &attn_out);
+    let attention_elapsed = attention_started.elapsed();
 
     // --- MLP sub-block --- (same "tokens still holds the residual" trick)
+    let ln2_started = std::time::Instant::now();
     let ln2 = run_layernorm(
         tokens,
         n,
@@ -356,6 +386,8 @@ pub fn vit_block(
         eps,
         weights,
     );
+    let ln2_elapsed = ln2_started.elapsed();
+    let fc1_started = std::time::Instant::now();
     let h = run_linear(
         &ln2,
         n,
@@ -367,6 +399,8 @@ pub fn vit_block(
         None,
         weights,
     );
+    let fc1_elapsed = fc1_started.elapsed();
+    let fc2_started = std::time::Instant::now();
     let m = run_linear(
         &h,
         n,
@@ -379,6 +413,16 @@ pub fn vit_block(
         weights,
     );
     da_kernels::scalar::add(tokens, &m);
+    if phase_profile {
+        eprintln!(
+            "phase: block[{layer_idx}] ln1={:.3}ms attention={:.3}ms ln2={:.3}ms fc1_gelu={:.3}ms fc2_residual={:.3}ms",
+            ln1_elapsed.as_secs_f64() * 1e3,
+            attention_elapsed.as_secs_f64() * 1e3,
+            ln2_elapsed.as_secs_f64() * 1e3,
+            fc1_elapsed.as_secs_f64() * 1e3,
+            fc2_started.elapsed().as_secs_f64() * 1e3,
+        );
+    }
 }
 
 #[cfg(test)]
