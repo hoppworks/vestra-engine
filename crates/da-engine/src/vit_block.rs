@@ -183,12 +183,13 @@ fn run_attention(
     for t in 0..n {
         let row = &qkv[t * 3 * embed..(t + 1) * 3 * embed];
         for h in 0..heads {
-            for d in 0..head_dim {
-                let dst = (h * n + t) * head_dim + d;
-                q[dst] = row[h * head_dim + d];
-                k[dst] = row[embed + h * head_dim + d];
-                v[dst] = row[2 * embed + h * head_dim + d];
-            }
+            let dst = (h * n + t) * head_dim;
+            let src = h * head_dim;
+            q[dst..dst + head_dim].copy_from_slice(&row[src..src + head_dim]);
+            k[dst..dst + head_dim]
+                .copy_from_slice(&row[embed + src..embed + src + head_dim]);
+            v[dst..dst + head_dim]
+                .copy_from_slice(&row[2 * embed + src..2 * embed + src + head_dim]);
         }
     }
     let pack_elapsed = pack_started.elapsed();
