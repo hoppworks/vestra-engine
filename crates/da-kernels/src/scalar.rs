@@ -54,7 +54,15 @@ pub fn add(dst: &mut [f32], src: &[f32]) {
 
 pub fn add_bias_rows(x: &mut [f32], rows: usize, cols: usize, bias: &[f32]) {
     debug_assert_eq!(x.len(), rows*cols); debug_assert_eq!(bias.len(), cols);
-    for r in 0..rows { for c in 0..cols { x[r*cols+c] += bias[c]; } }
+    if rows >= 32 {
+        x.par_chunks_mut(cols).for_each(|row| {
+            for c in 0..cols { row[c] += bias[c]; }
+        });
+    } else {
+        for row in x.chunks_mut(cols) {
+            for c in 0..cols { row[c] += bias[c]; }
+        }
+    }
 }
 
 pub fn layernorm(x: &mut [f32], rows: usize, cols: usize, gamma: &[f32], beta: &[f32], eps: f32) {
@@ -105,6 +113,30 @@ mod tests {
             sequential.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
         );
     }
+
+    #[test]
+    fn parallel_rowwise_epilogues_are_bitwise_identical() {
+        let rows = 67;
+        let cols = 64;
+        let bias: Vec<f32> = (0..cols).map(|i| i as f32 * 0.01 - 0.2).collect();
+        let gamma: Vec<f32> = (0..cols).map(|i| i as f32 * 0.02 + 0.3).collect();
+        let input: Vec<f32> = (0..rows * cols)
+            .map(|i| (i as f32 - 1000.0) * 0.03125)
+            .collect();
+        let mut parallel = input.clone();
+        let mut sequential = input;
+
+        super::add_bias_rows(&mut parallel, rows, cols, &bias);
+        super::layerscale(&mut parallel, rows, cols, &gamma);
+        for row in sequential.chunks_mut(cols) {
+            for c in 0..cols { row[c] += bias[c]; }
+            for c in 0..cols { row[c] *= gamma[c]; }
+        }
+        assert_eq!(
+            parallel.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            sequential.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+        );
+    }
 }
 
 pub fn gelu(x: &mut [f32]) {
@@ -126,9 +158,13 @@ fn erf(x: f32) -> f32 {
 pub fn layerscale(x: &mut [f32], rows: usize, cols: usize, gamma: &[f32]) {
     debug_assert_eq!(x.len(), rows * cols);
     debug_assert_eq!(gamma.len(), cols);
-    for r in 0..rows {
-        for c in 0..cols {
-            x[r * cols + c] *= gamma[c];
+    if rows >= 32 {
+        x.par_chunks_mut(cols).for_each(|row| {
+            for c in 0..cols { row[c] *= gamma[c]; }
+        });
+    } else {
+        for row in x.chunks_mut(cols) {
+            for c in 0..cols { row[c] *= gamma[c]; }
         }
     }
 }

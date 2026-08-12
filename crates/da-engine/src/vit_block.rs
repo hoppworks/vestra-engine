@@ -372,7 +372,7 @@ pub fn vit_block(
     let ln1_elapsed = ln1_started.elapsed();
     let attention_started = std::time::Instant::now();
     let attn_out = run_attention(&ln1, n, gh, gw, global, cfg, layer_idx, weights);
-    da_kernels::scalar::add(tokens, &attn_out);
+    da_kernels::Kernels::detect().add(tokens, &attn_out);
     let attention_elapsed = attention_started.elapsed();
 
     // --- MLP sub-block --- (same "tokens still holds the residual" trick)
@@ -412,7 +412,7 @@ pub fn vit_block(
         Some(&wname(layer_idx, "ls2")),
         weights,
     );
-    da_kernels::scalar::add(tokens, &m);
+    da_kernels::Kernels::detect().add(tokens, &m);
     if phase_profile {
         eprintln!(
             "phase: block[{layer_idx}] ln1={:.3}ms attention={:.3}ms ln2={:.3}ms fc1_gelu={:.3}ms fc2_residual={:.3}ms",
