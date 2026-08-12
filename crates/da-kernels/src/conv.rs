@@ -83,12 +83,13 @@ fn conv3x3_winograd_f2(
     tile_out
         .par_chunks_mut(out_c * 4)
         .enumerate()
-        .for_each(|(tile, dst)| {
+        .for_each_init(
+            || vec![0.0; in_c * 16],
+            |v, (tile, dst)| {
             let ty = tile / tiles_x;
             let tx = tile % tiles_x;
             let y = ty * 2;
             let x = tx * 2;
-            let mut v = vec![0.0; in_c * 16];
             for ic in 0..in_c {
                 let d = &mut v[ic * 16..(ic + 1) * 16];
                 for dy in 0..4 {
@@ -135,7 +136,8 @@ fn conv3x3_winograd_f2(
                 values[2] = p[4] + p[5] + p[6] + b;
                 values[3] = p[5] - p[6] - p[7] + b;
             }
-        });
+            },
+        );
     for ty in 0..tiles_y {
         for tx in 0..tiles_x {
             let tile = (ty * tiles_x + tx) * out_c * 4;
