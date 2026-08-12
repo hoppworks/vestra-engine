@@ -8,6 +8,7 @@ license.workspace = true
 da-gguf = { path = "../da-gguf" }
 faer.workspace = true
 half.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
