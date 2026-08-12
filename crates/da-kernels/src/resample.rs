@@ -1,3 +1,5 @@
+use rayon::prelude::*;
+
 /// Bilineares Resize (NCHW, Batch=1), half-pixel-centers Konvention
 /// (entspricht PyTorch `F.interpolate(..., mode="bilinear", align_corners=False)`,
 /// der in DPT-artigen Netzen ueblichen Variante). Randpixel werden geklemmt
@@ -36,9 +38,8 @@ pub fn bilinear_resize(input: &[f32], c: usize, ih: usize, iw: usize, oh: usize,
             acc
         });
 
-    for ch in 0..c {
+    out.par_chunks_mut(oh * ow).enumerate().for_each(|(ch, out_plane)| {
         let plane = &input[ch * ih * iw..(ch + 1) * ih * iw];
-        let out_plane = &mut out[ch * oh * ow..(ch + 1) * oh * ow];
         for oy in 0..oh {
             let (y0, y1, fy) = (y0s[oy], y1s[oy], wy[oy]);
             let row0 = &plane[y0 * iw..(y0 + 1) * iw];
@@ -50,7 +51,7 @@ pub fn bilinear_resize(input: &[f32], c: usize, ih: usize, iw: usize, oh: usize,
                 out_plane[oy * ow + ox] = top * (1.0 - fy) + bot * fy;
             }
         }
-    }
+    });
 }
 
 /// Fuer eine Zielkoordinate `dst` entlang einer Achse mit `len_in` Quellelementen
@@ -171,9 +172,8 @@ pub fn bilinear_resize_align_corners(
             acc
         });
 
-    for ch in 0..c {
+    out.par_chunks_mut(oh * ow).enumerate().for_each(|(ch, out_plane)| {
         let plane = &input[ch * ih * iw..(ch + 1) * ih * iw];
-        let out_plane = &mut out[ch * oh * ow..(ch + 1) * oh * ow];
         for oy in 0..oh {
             let (y0, y1, fy) = (y0s[oy], y1s[oy], wy[oy]);
             let row0 = &plane[y0 * iw..(y0 + 1) * iw];
@@ -185,7 +185,7 @@ pub fn bilinear_resize_align_corners(
                 out_plane[oy * ow + ox] = top * (1.0 - fy) + bot * fy;
             }
         }
-    }
+    });
 }
 
 #[cfg(test)]
