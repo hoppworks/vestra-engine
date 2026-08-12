@@ -34,6 +34,60 @@ unsafe fn winograd_accumulate_avx512(
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,fma")]
+unsafe fn conv_transpose_nonoverlap_avx512(
+    input: &[f32], in_c: usize, ih: usize, iw: usize, weight: &[f32], out_c: usize,
+    kh: usize, kw: usize, bias: Option<&[f32]>, out: &mut [f32],
+) {
+    use core::arch::x86_64::*;
+    let oh = ih * kh;
+    let ow = iw * kw;
+    // Convert NCHW once to the channel-contiguous pixel layout required by a
+    // vector dot. This is tiny compared to repeatedly striding through it for
+    // every output channel and output-tile coefficient.
+    let mut pixels = vec![0.0f32; ih * iw * in_c];
+    for iy in 0..ih {
+        for ix in 0..iw {
+            let dst = &mut pixels[(iy * iw + ix) * in_c..(iy * iw + ix + 1) * in_c];
+            for ic in 0..in_c { dst[ic] = input[(ic * ih + iy) * iw + ix]; }
+        }
+    }
+    // IOHW -> (O, KY, KX, I), one contiguous vector per output coefficient.
+    let mut packed = vec![0.0f32; out_c * kh * kw * in_c];
+    for oc in 0..out_c {
+        for ky in 0..kh {
+            for kx in 0..kw {
+                let dst = &mut packed[((oc * kh + ky) * kw + kx) * in_c..((oc * kh + ky) * kw + kx + 1) * in_c];
+                for ic in 0..in_c { dst[ic] = weight[((ic * out_c + oc) * kh + ky) * kw + kx]; }
+            }
+        }
+    }
+    out.par_chunks_mut(oh * ow).enumerate().for_each(|(oc, plane)| {
+        let b = bias.map_or(0.0, |values| values[oc]);
+        for iy in 0..ih {
+            for ix in 0..iw {
+                let px = &pixels[(iy * iw + ix) * in_c..(iy * iw + ix + 1) * in_c];
+                for ky in 0..kh {
+                    for kx in 0..kw {
+                        let wv = &packed[((oc * kh + ky) * kw + kx) * in_c..((oc * kh + ky) * kw + kx + 1) * in_c];
+                        let mut lanes = _mm512_setzero_ps();
+                        for ic in (0..in_c).step_by(16) {
+                            let x = unsafe { _mm512_loadu_ps(px.as_ptr().add(ic)) };
+                            let w = unsafe { _mm512_loadu_ps(wv.as_ptr().add(ic)) };
+                            lanes = _mm512_fmadd_ps(x, w, lanes);
+                        }
+                        let mut partial = [0.0f32; 16];
+                        unsafe { _mm512_storeu_ps(partial.as_mut_ptr(), lanes) };
+                        let sum: f32 = partial.iter().sum();
+                        plane[(iy * kh + ky) * ow + ix * kw + kx] = sum + b;
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn winograd_filter_key(weight: &[f32], in_c: usize, out_c: usize) -> WinogradFilterKey {
     // The model weights are immutable.  Hashing their exact F32 bit patterns
     // makes cache reuse safe across separately loaded models as well.
@@ -424,6 +478,23 @@ pub fn conv_transpose2d(
     let oh = (ih - 1) * stride + kh;
     let ow = (iw - 1) * stride + kw;
     debug_assert_eq!(out.len(), out_c * oh * ow);
+
+    #[cfg(target_arch = "x86_64")]
+    if kh == stride
+        && kw == stride
+        && in_c % 16 == 0
+        && std::is_x86_feature_detected!("avx512f")
+        && std::is_x86_feature_detected!("fma")
+    {
+        // SAFETY: the branch proves the non-overlap geometry and vector
+        // width; all public shape assertions above remain in force.
+        unsafe {
+            conv_transpose_nonoverlap_avx512(
+                input, in_c, ih, iw, weight, out_c, kh, kw, bias, out,
+            )
+        };
+        return;
+    }
 
     // The DPT resize layers use kernel == stride with no padding.  Each input
     // spatial location therefore owns a disjoint output tile, so output
