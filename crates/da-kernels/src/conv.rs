@@ -45,6 +45,114 @@ fn im2col(
         });
 }
 
+/// Winograd F(2x2, 3x3) convolution for the common stride-1, pad-1 DPT
+/// shape.  The transforms use only additions, subtractions and halves.
+#[allow(clippy::too_many_arguments)]
+fn conv3x3_winograd_f2(
+    input: &[f32], in_c: usize, ih: usize, iw: usize, weight: &[f32], out_c: usize,
+    bias: Option<&[f32]>, out: &mut [f32],
+) {
+    let oh = ih;
+    let ow = iw;
+    let tiles_y = oh.div_ceil(2);
+    let tiles_x = ow.div_ceil(2);
+    let tiles = tiles_y * tiles_x;
+    let mut transformed = vec![0.0; out_c * in_c * 16];
+    for oc in 0..out_c {
+        for ic in 0..in_c {
+            let g = &weight[(oc * in_c + ic) * 9..(oc * in_c + ic + 1) * 9];
+            let mut t = [[0.0; 3]; 4];
+            for j in 0..3 {
+                let (a, b, c) = (g[j], g[3 + j], g[6 + j]);
+                t[0][j] = a;
+                t[1][j] = 0.5 * (a + b + c);
+                t[2][j] = 0.5 * (a - b + c);
+                t[3][j] = c;
+            }
+            let u = &mut transformed[(oc * in_c + ic) * 16..(oc * in_c + ic + 1) * 16];
+            for i in 0..4 {
+                let (a, b, c) = (t[i][0], t[i][1], t[i][2]);
+                u[i * 4] = a;
+                u[i * 4 + 1] = 0.5 * (a + b + c);
+                u[i * 4 + 2] = 0.5 * (a - b + c);
+                u[i * 4 + 3] = c;
+            }
+        }
+    }
+    let mut tile_out = vec![0.0; tiles * out_c * 4];
+    tile_out
+        .par_chunks_mut(out_c * 4)
+        .enumerate()
+        .for_each(|(tile, dst)| {
+            let ty = tile / tiles_x;
+            let tx = tile % tiles_x;
+            let y = ty * 2;
+            let x = tx * 2;
+            let mut v = vec![0.0; in_c * 16];
+            for ic in 0..in_c {
+                let d = &mut v[ic * 16..(ic + 1) * 16];
+                for dy in 0..4 {
+                    let sy = y as isize + dy as isize - 1;
+                    for dx in 0..4 {
+                        let sx = x as isize + dx as isize - 1;
+                        d[dy * 4 + dx] = if sy >= 0 && sy < ih as isize && sx >= 0 && sx < iw as isize {
+                            input[(ic * ih + sy as usize) * iw + sx as usize]
+                        } else { 0.0 };
+                    }
+                }
+                let mut m = [0.0; 16];
+                for j in 0..4 {
+                    let (a, b, c, d3) = (d[j], d[4 + j], d[8 + j], d[12 + j]);
+                    m[j] = a - c;
+                    m[4 + j] = b + c;
+                    m[8 + j] = c - b;
+                    m[12 + j] = b - d3;
+                }
+                for i in 0..4 {
+                    let (a, b, c, d3) = (m[i * 4], m[i * 4 + 1], m[i * 4 + 2], m[i * 4 + 3]);
+                    d[i * 4] = a - c;
+                    d[i * 4 + 1] = b + c;
+                    d[i * 4 + 2] = c - b;
+                    d[i * 4 + 3] = b - d3;
+                }
+            }
+            for oc in 0..out_c {
+                let mut m = [0.0; 16];
+                for ic in 0..in_c {
+                    let u = &transformed[(oc * in_c + ic) * 16..(oc * in_c + ic + 1) * 16];
+                    let vv = &v[ic * 16..(ic + 1) * 16];
+                    for p in 0..16 { m[p] += u[p] * vv[p]; }
+                }
+                let mut p = [0.0; 8];
+                for j in 0..4 {
+                    p[j] = m[j] + m[4 + j] + m[8 + j];
+                    p[4 + j] = m[4 + j] - m[8 + j] - m[12 + j];
+                }
+                let b = bias.map_or(0.0, |values| values[oc]);
+                let values = &mut dst[oc * 4..oc * 4 + 4];
+                values[0] = p[0] + p[1] + p[2] + b;
+                values[1] = p[1] - p[2] - p[3] + b;
+                values[2] = p[4] + p[5] + p[6] + b;
+                values[3] = p[5] - p[6] - p[7] + b;
+            }
+        });
+    for ty in 0..tiles_y {
+        for tx in 0..tiles_x {
+            let tile = (ty * tiles_x + tx) * out_c * 4;
+            for oc in 0..out_c {
+                let values = &tile_out[tile + oc * 4..tile + oc * 4 + 4];
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let oy = ty * 2 + dy;
+                        let ox = tx * 2 + dx;
+                        if oy < oh && ox < ow { out[(oc * oh + oy) * ow + ox] = values[dy * 2 + dx]; }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn im2col_serial(
@@ -99,6 +207,11 @@ pub fn conv2d(
     let oh = (ih + 2 * pad - kh) / stride + 1;
     let ow = (iw + 2 * pad - kw) / stride + 1;
     debug_assert_eq!(out.len(), out_c * oh * ow);
+
+    if kh == 3 && kw == 3 && stride == 1 && pad == 1 {
+        conv3x3_winograd_f2(input, in_c, ih, iw, weight, out_c, bias, out);
+        return;
+    }
 
     let k = in_c * kh * kw;
     let n = oh * ow;
@@ -524,6 +637,22 @@ mod tests {
         im2col(&input, in_c, ih, iw, kh, kw, stride, pad, oh, ow, &mut parallel);
         im2col_serial(&input, in_c, ih, iw, kh, kw, stride, pad, oh, ow, &mut serial);
         assert_eq!(parallel, serial);
+    }
+
+    #[test]
+    fn winograd_f2_matches_direct_3x3_oracle() {
+        let (in_c, out_c, h, w) = (3, 5, 7, 9);
+        let mut rng = Xorshift32(0xF2F2_0001);
+        let input = random_vec(&mut rng, in_c * h * w);
+        let weight = random_vec(&mut rng, out_c * in_c * 9);
+        let bias = random_vec(&mut rng, out_c);
+        let mut winograd = vec![0.0; out_c * h * w];
+        let mut direct = vec![0.0; winograd.len()];
+        conv3x3_winograd_f2(&input, in_c, h, w, &weight, out_c, Some(&bias), &mut winograd);
+        conv2d_naive(&input, in_c, h, w, &weight, out_c, 3, 3, 1, 1, Some(&bias), &mut direct);
+        for (i, (got, expected)) in winograd.iter().zip(direct.iter()).enumerate() {
+            assert!((got - expected).abs() < 2e-5, "i={i} got={got} expected={expected}");
+        }
     }
 
     /// Deterministischer, dependency-freier PRNG (Xorshift32) fuer reproduzierbare
