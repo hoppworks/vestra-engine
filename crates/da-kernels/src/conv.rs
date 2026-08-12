@@ -173,21 +173,26 @@ fn conv3x3_winograd_f2(
             }
             },
         );
-    for ty in 0..tiles_y {
-        for tx in 0..tiles_x {
-            let tile = (ty * tiles_x + tx) * out_c * 4;
-            for oc in 0..out_c {
+    // Output channels own disjoint NCHW planes. Parallelizing the scatter
+    // avoids serially copying the full tile buffer after the parallel
+    // Winograd transform/multiply stage.
+    out.par_chunks_mut(oh * ow)
+        .enumerate()
+        .for_each(|(oc, out_plane)| {
+            for ty in 0..tiles_y {
+                for tx in 0..tiles_x {
+                    let tile = (ty * tiles_x + tx) * out_c * 4;
                 let values = &tile_out[tile + oc * 4..tile + oc * 4 + 4];
                 for dy in 0..2 {
                     for dx in 0..2 {
                         let oy = ty * 2 + dy;
                         let ox = tx * 2 + dx;
-                        if oy < oh && ox < ow { out[(oc * oh + oy) * ow + ox] = values[dy * 2 + dx]; }
+                        if oy < oh && ox < ow { out_plane[oy * ow + ox] = values[dy * 2 + dx]; }
                     }
                 }
             }
-        }
-    }
+            }
+        });
 }
 
 #[cfg(test)]
