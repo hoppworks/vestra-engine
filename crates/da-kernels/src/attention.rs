@@ -20,7 +20,6 @@ pub fn attention_naive(
     assert_eq!(k.len(), heads * n * head_dim);
     assert_eq!(v.len(), heads * n * head_dim);
     assert_eq!(out.len(), heads * n * head_dim);
-
     let scale = 1.0f32 / (head_dim as f32).sqrt();
     let mut scores = vec![0f32; n];
     for h in 0..heads {
@@ -77,6 +76,9 @@ pub fn attention(
     assert_eq!(k.len(), heads * n * head_dim);
     assert_eq!(v.len(), heads * n * head_dim);
     assert_eq!(out.len(), heads * n * head_dim);
+    if head_dim == 64 && da3_kernels::flash_attention_f32_da3_base(q, k, v, heads, n, out) {
+        return;
+    }
 
     let scale = 1.0f32 / (head_dim as f32).sqrt();
     #[cfg(target_arch = "x86_64")]

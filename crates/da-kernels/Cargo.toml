@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 da-gguf = { path = "../da-gguf" }
+da3-kernels = { path = "../../../../da3-kernels" }
 faer.workspace = true
 half.workspace = true
 rayon.workspace = true
