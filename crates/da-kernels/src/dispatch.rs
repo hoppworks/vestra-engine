@@ -56,7 +56,18 @@ impl Kernels {
     pub fn gelu(&self, x: &mut [f32]) {
         match self.isa {
             #[cfg(target_arch = "x86_64")]
-            Isa::Avx512 => unsafe { crate::simd_avx512::gelu_avx512(x) },
+            Isa::Avx512 => {
+                use rayon::prelude::*;
+                if std::env::var_os("DA3_KERNELS_DISABLE_PARALLEL_GELU").is_some() {
+                    unsafe { crate::simd_avx512::gelu_avx512(x) };
+                    return;
+                }
+                // FC1 contains 2.6M independent values at the locked DA3
+                // shape. Keep the SIMD arithmetic for each value unchanged,
+                // but do not leave this post-GEMM pass on a single core.
+                x.par_chunks_mut(4096)
+                    .for_each(|chunk| unsafe { crate::simd_avx512::gelu_avx512(chunk) });
+            }
             _ => crate::scalar::gelu(x),
         }
     }
