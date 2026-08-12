@@ -14,6 +14,8 @@ impl Gemm for ScalarGemm {
 pub struct FaerGemm;
 impl Gemm for FaerGemm {
     fn gemm(&self, m: usize, n: usize, k: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
+        let profile = std::env::var_os("DA_GEMM_PROFILE").is_some();
+        let started = std::time::Instant::now();
         debug_assert_eq!(a.len(), m * k);
         debug_assert_eq!(b.len(), k * n);
         debug_assert_eq!(c.len(), m * n);
@@ -27,6 +29,12 @@ impl Gemm for FaerGemm {
         // the benchmark fixed RAYON_NUM_THREADS (and the C++/PyTorch runners)
         // to a larger, identical thread count.
         faer::linalg::matmul::matmul(cm, a, b, None, 1.0, faer::get_global_parallelism());
+        if profile {
+            eprintln!(
+                "phase: gemm m={m} n={n} k={k} elapsed={:.3}ms",
+                started.elapsed().as_secs_f64() * 1e3,
+            );
+        }
     }
 }
 
