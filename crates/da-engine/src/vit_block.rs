@@ -58,7 +58,7 @@
 //! requires everywhere else in `da-graph`.
 use crate::ModelConfig;
 use da_graph::{Backend, Weights};
-use da_kernels::gemm::{FaerGemm, Gemm};
+use da_kernels::gemm::{Da3ProjectionGemm, Gemm};
 
 /// The per-head QK-LayerNorm epsilon (trap #1 from the Task 17 brief):
 /// torch's *default* `nn.LayerNorm` eps, **not** the block's `ln_eps`. See
@@ -118,7 +118,7 @@ fn run_linear(
         .get_f32(b_name)
         .unwrap_or_else(|| panic!("Weights missing f32 entry {b_name:?}"));
     let mut out = vec![0.0; m * n];
-    FaerGemm.gemm(m, n, k, x_in, weight, &mut out);
+    Da3ProjectionGemm.gemm(m, n, k, x_in, weight, &mut out);
     da_kernels::scalar::add_bias_rows(&mut out, m, n, bias);
     if gelu {
         da_kernels::Kernels::detect().gelu(&mut out);

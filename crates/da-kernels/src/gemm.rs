@@ -38,6 +38,18 @@ impl Gemm for FaerGemm {
     }
 }
 
+/// Narrow DA3 transformer projection dispatcher. Only the fixed BASE shapes
+/// can reach the external AVX-512 candidate; every other operation uses Faer.
+pub struct Da3ProjectionGemm;
+impl Gemm for Da3ProjectionGemm {
+    fn gemm(&self, m: usize, n: usize, k: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
+        if da3_kernels::linear_f32_da3_base(m, n, k, a, b, c) {
+            return;
+        }
+        FaerGemm.gemm(m, n, k, a, b, c);
+    }
+}
+
 pub struct GemmWithEpilogue<G: Gemm> {
     pub inner: G,
 }
