@@ -79,6 +79,31 @@ pub(crate) unsafe fn exp_in_place_avx512(values: &mut [f32]) {
     }
 }
 
+/// AVX-512 dot product. The final scalar reduction intentionally keeps the
+/// result in F32 and avoids FMA; callers still validate full-model parity.
+#[inline]
+#[target_feature(enable = "avx512f")]
+pub(crate) unsafe fn dot_avx512(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+    let main = a.len() - (a.len() % LANES);
+    let mut lanes = _mm512_setzero_ps();
+    let mut i = 0;
+    while i < main {
+        lanes = _mm512_add_ps(
+            lanes,
+            _mm512_mul_ps(_mm512_loadu_ps(a.as_ptr().add(i)), _mm512_loadu_ps(b.as_ptr().add(i))),
+        );
+        i += LANES;
+    }
+    let mut partial = [0.0f32; LANES];
+    _mm512_storeu_ps(partial.as_mut_ptr(), lanes);
+    let mut sum: f32 = partial.iter().sum();
+    for i in main..a.len() {
+        sum += a[i] * b[i];
+    }
+    sum
+}
+
 /// Vectorized `erf` using the same Abramowitz-Stegun 7.1.26 approximation
 /// as `scalar::erf` (|error| < 1.5e-7), so `gelu_avx512` stays within the
 /// tolerance band of `scalar::gelu`.

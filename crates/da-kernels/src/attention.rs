@@ -129,6 +129,14 @@ fn attention_row(
         let mut tile_max = f32::NEG_INFINITY;
         for (t, j) in (j0..j1).enumerate() {
             let kj = &kh[j * head_dim..(j + 1) * head_dim];
+            #[cfg(target_arch = "x86_64")]
+            let dot = if use_avx512 {
+                // SAFETY: runtime feature detection above guarantees AVX-512F.
+                unsafe { crate::simd_avx512::dot_avx512(qi, kj) }
+            } else {
+                qi.iter().zip(kj.iter()).map(|(a, b)| a * b).sum()
+            };
+            #[cfg(not(target_arch = "x86_64"))]
             let dot: f32 = qi.iter().zip(kj.iter()).map(|(a, b)| a * b).sum();
             let score = dot * scale;
             local_scores[t] = score;
