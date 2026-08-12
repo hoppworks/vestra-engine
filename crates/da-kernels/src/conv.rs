@@ -1,5 +1,61 @@
 use crate::gemm::Gemm;
 use rayon::prelude::*;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+struct WinogradFilterKey {
+    in_c: usize,
+    out_c: usize,
+    words_hash: u64,
+}
+
+static WINOGRAD_FILTERS: OnceLock<Mutex<HashMap<WinogradFilterKey, Arc<[f32]>>>> = OnceLock::new();
+
+fn winograd_filter_key(weight: &[f32], in_c: usize, out_c: usize) -> WinogradFilterKey {
+    // The model weights are immutable.  Hashing their exact F32 bit patterns
+    // makes cache reuse safe across separately loaded models as well.
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for value in weight {
+        hash ^= u64::from(value.to_bits());
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    WinogradFilterKey { in_c, out_c, words_hash: hash }
+}
+
+fn transformed_winograd_filter(weight: &[f32], in_c: usize, out_c: usize) -> Arc<[f32]> {
+    let key = winograd_filter_key(weight, in_c, out_c);
+    let cache = WINOGRAD_FILTERS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().expect("Winograd filter cache mutex poisoned");
+    if let Some(filter) = cache.get(&key) {
+        return Arc::clone(filter);
+    }
+    let mut transformed = vec![0.0; out_c * in_c * 16];
+    for oc in 0..out_c {
+        for ic in 0..in_c {
+            let g = &weight[(oc * in_c + ic) * 9..(oc * in_c + ic + 1) * 9];
+            let mut t = [[0.0; 3]; 4];
+            for j in 0..3 {
+                let (a, b, c) = (g[j], g[3 + j], g[6 + j]);
+                t[0][j] = a;
+                t[1][j] = 0.5 * (a + b + c);
+                t[2][j] = 0.5 * (a - b + c);
+                t[3][j] = c;
+            }
+            let u = &mut transformed[(oc * in_c + ic) * 16..(oc * in_c + ic + 1) * 16];
+            for i in 0..4 {
+                let (a, b, c) = (t[i][0], t[i][1], t[i][2]);
+                u[i * 4] = a;
+                u[i * 4 + 1] = 0.5 * (a + b + c);
+                u[i * 4 + 2] = 0.5 * (a - b + c);
+                u[i * 4 + 3] = c;
+            }
+        }
+    }
+    let transformed: Arc<[f32]> = transformed.into();
+    cache.insert(key, Arc::clone(&transformed));
+    transformed
+}
 
 /// im2col: expandiert `input` (NCHW, N=1) zu einer `(out_c_rows=kh*kw*in_c) x (oh*ow)`
 /// Spaltenmatrix, sodass `conv2d` als eine einzige GEMM (`weight_mat @ col`) berechnet
@@ -57,28 +113,7 @@ fn conv3x3_winograd_f2(
     let tiles_y = oh.div_ceil(2);
     let tiles_x = ow.div_ceil(2);
     let tiles = tiles_y * tiles_x;
-    let mut transformed = vec![0.0; out_c * in_c * 16];
-    for oc in 0..out_c {
-        for ic in 0..in_c {
-            let g = &weight[(oc * in_c + ic) * 9..(oc * in_c + ic + 1) * 9];
-            let mut t = [[0.0; 3]; 4];
-            for j in 0..3 {
-                let (a, b, c) = (g[j], g[3 + j], g[6 + j]);
-                t[0][j] = a;
-                t[1][j] = 0.5 * (a + b + c);
-                t[2][j] = 0.5 * (a - b + c);
-                t[3][j] = c;
-            }
-            let u = &mut transformed[(oc * in_c + ic) * 16..(oc * in_c + ic + 1) * 16];
-            for i in 0..4 {
-                let (a, b, c) = (t[i][0], t[i][1], t[i][2]);
-                u[i * 4] = a;
-                u[i * 4 + 1] = 0.5 * (a + b + c);
-                u[i * 4 + 2] = 0.5 * (a - b + c);
-                u[i * 4 + 3] = c;
-            }
-        }
-    }
+    let transformed = transformed_winograd_filter(weight, in_c, out_c);
     let mut tile_out = vec![0.0; tiles * out_c * 4];
     tile_out
         .par_chunks_mut(out_c * 4)
