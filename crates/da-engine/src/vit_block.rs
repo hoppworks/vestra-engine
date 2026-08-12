@@ -57,7 +57,8 @@
 //! module's private assumption but the same orientation `Op::Gemm` already
 //! requires everywhere else in `da-graph`.
 use crate::ModelConfig;
-use da_graph::{Backend, Graph, RopeParams, Weights};
+use da_graph::{Backend, Weights};
+use da_kernels::gemm::{FaerGemm, Gemm};
 
 /// The per-head QK-LayerNorm epsilon (trap #1 from the Task 17 brief):
 /// torch's *default* `nn.LayerNorm` eps, **not** the block's `ln_eps`. See
@@ -70,10 +71,10 @@ fn wname(layer_idx: usize, suffix: &str) -> String {
     format!("vit.blk.{layer_idx}.{suffix}")
 }
 
-/// Runs `x[rows,cols] -> LayerNorm(x, gamma, beta, eps)` through a
-/// single-op `da_graph` mini-graph and returns the result as a fresh
-/// `Vec<f32>` (the input slice is only read, never mutated — the op's
-/// in-place semantics apply to the graph's own arena copy of it).
+/// Runs `x[rows,cols] -> LayerNorm(x, gamma, beta, eps)` directly on an
+/// activation copy.  The model parameters are immutable and borrowed from
+/// `Weights`; copying them into a per-operation graph arena was pure
+/// overhead on the inference path.
 fn run_layernorm(
     x_in: &[f32],
     rows: usize,
@@ -82,22 +83,22 @@ fn run_layernorm(
     beta_name: &str,
     eps: f32,
     weights: &Weights,
-    backend: &dyn Backend,
 ) -> Vec<f32> {
-    let mut b = Graph::builder();
-    let x = b.input(rows * cols);
-    let g = b.weight(gamma_name.to_string(), cols);
-    let be = b.weight(beta_name.to_string(), cols);
-    b.layer_norm(x, g, be, rows, cols, eps);
-    b.output(x);
-    let plan = b.build().compile();
-    plan.run(backend, &[x_in], weights).remove(0)
+    let mut out = x_in.to_vec();
+    let gamma = weights
+        .get_f32(gamma_name)
+        .unwrap_or_else(|| panic!("Weights missing f32 entry {gamma_name:?}"));
+    let beta = weights
+        .get_f32(beta_name)
+        .unwrap_or_else(|| panic!("Weights missing f32 entry {beta_name:?}"));
+    da_kernels::scalar::layernorm(&mut out, rows, cols, gamma, beta, eps);
+    out
 }
 
 /// Runs `y = x[m,k] @ w[k,n] + bias[n]`, optionally followed by GELU and/or
 /// an in-place LayerScale (`y *= ls_gamma[n]`, only if `ls_name` is `Some`
 /// *and* that tensor is actually present in `weights` — presence-gated,
-/// trap #3), through a single `da_graph` mini-graph.
+/// trap #3).
 #[allow(clippy::too_many_arguments)]
 fn run_linear(
     x_in: &[f32],
@@ -109,26 +110,25 @@ fn run_linear(
     gelu: bool,
     ls_name: Option<&str>,
     weights: &Weights,
-    backend: &dyn Backend,
 ) -> Vec<f32> {
-    let mut b = Graph::builder();
-    let x = b.input(m * k);
-    let w = b.weight(w_name.to_string(), k * n);
-    let bias = b.weight(b_name.to_string(), n);
-    let y = b.gemm(x, w, m, n, k);
-    b.add_bias(y, bias, m, n);
+    let weight = weights
+        .get_f32(w_name)
+        .unwrap_or_else(|| panic!("Weights missing f32 entry {w_name:?}"));
+    let bias = weights
+        .get_f32(b_name)
+        .unwrap_or_else(|| panic!("Weights missing f32 entry {b_name:?}"));
+    let mut out = vec![0.0; m * n];
+    FaerGemm.gemm(m, n, k, x_in, weight, &mut out);
+    da_kernels::scalar::add_bias_rows(&mut out, m, n, bias);
     if gelu {
-        b.gelu(y);
+        da_kernels::Kernels::detect().gelu(&mut out);
     }
     if let Some(name) = ls_name {
-        if weights.get_f32(name).is_some() {
-            let g = b.weight(name.to_string(), n);
-            b.layer_scale(y, g, m, n);
+        if let Some(gamma) = weights.get_f32(name) {
+            da_kernels::scalar::layerscale(&mut out, m, n, gamma);
         }
     }
-    b.output(y);
-    let plan = b.build().compile();
-    plan.run(backend, &[x_in], weights).remove(0)
+    out
 }
 
 /// Runs the attention sub-block: fused QKV linear -> split/transpose into
@@ -150,7 +150,6 @@ fn run_attention(
     cfg: &ModelConfig,
     layer_idx: usize,
     weights: &Weights,
-    backend: &dyn Backend,
 ) -> Vec<f32> {
     let embed = cfg.embed_dim as usize;
     let heads = cfg.num_heads as usize;
@@ -166,7 +165,6 @@ fn run_attention(
         false,
         None,
         weights,
-        backend,
     );
 
     // Split the fused per-token [Q(embed)|K(embed)|V(embed)] row (each
@@ -191,8 +189,9 @@ fn run_attention(
     }
 
     let qn_w = wname(layer_idx, "attn_qnorm.weight");
-    let use_qknorm =
-        cfg.qknorm_start >= 0 && (layer_idx as i32) >= cfg.qknorm_start && weights.get_f32(&qn_w).is_some();
+    let use_qknorm = cfg.qknorm_start >= 0
+        && (layer_idx as i32) >= cfg.qknorm_start
+        && weights.get_f32(&qn_w).is_some();
     let use_rope = cfg.rope_start >= 0 && (layer_idx as i32) >= cfg.rope_start;
 
     // RoPE positions: special tokens (CLS + registers) always get (0,0).
@@ -226,39 +225,32 @@ fn run_attention(
         Vec::new()
     };
 
-    let mut b = Graph::builder();
-    let q_id = b.input(heads * n * head_dim);
-    let k_id = b.input(heads * n * head_dim);
-    let v_id = b.input(heads * n * head_dim);
-    let qnorm = if use_qknorm {
-        let g = b.weight(qn_w, head_dim);
-        let be = b.weight(wname(layer_idx, "attn_qnorm.bias"), head_dim);
-        Some((g, be))
-    } else {
-        None
-    };
-    let knorm = if use_qknorm {
-        let g = b.weight(wname(layer_idx, "attn_knorm.weight"), head_dim);
-        let be = b.weight(wname(layer_idx, "attn_knorm.bias"), head_dim);
-        Some((g, be))
-    } else {
-        None
-    };
-    let rope = if use_rope {
-        let pos_id = b.input(n * 2);
-        Some(RopeParams { pos_yx: pos_id, freq: cfg.rope_freq })
-    } else {
-        None
-    };
-    let out_id = b.attention_full(q_id, k_id, v_id, heads, n, head_dim, qnorm, knorm, QK_NORM_EPS, rope);
-    b.output(out_id);
-    let plan = b.build().compile();
-
-    let mut inputs: Vec<&[f32]> = vec![&q, &k, &v];
-    if use_rope {
-        inputs.push(&pos_yx);
+    if use_qknorm {
+        let q_gamma = weights
+            .get_f32(&qn_w)
+            .unwrap_or_else(|| panic!("Weights missing f32 entry {qn_w:?}"));
+        let q_beta_name = wname(layer_idx, "attn_qnorm.bias");
+        let q_beta = weights
+            .get_f32(&q_beta_name)
+            .unwrap_or_else(|| panic!("Weights missing f32 entry {q_beta_name:?}"));
+        let k_gamma_name = wname(layer_idx, "attn_knorm.weight");
+        let k_gamma = weights
+            .get_f32(&k_gamma_name)
+            .unwrap_or_else(|| panic!("Weights missing f32 entry {k_gamma_name:?}"));
+        let k_beta_name = wname(layer_idx, "attn_knorm.bias");
+        let k_beta = weights
+            .get_f32(&k_beta_name)
+            .unwrap_or_else(|| panic!("Weights missing f32 entry {k_beta_name:?}"));
+        da_kernels::scalar::layernorm(&mut q, heads * n, head_dim, q_gamma, q_beta, QK_NORM_EPS);
+        da_kernels::scalar::layernorm(&mut k, heads * n, head_dim, k_gamma, k_beta, QK_NORM_EPS);
     }
-    let attn_hnd = plan.run(backend, &inputs, weights).remove(0);
+    if use_rope {
+        let positions: Vec<i64> = pos_yx.iter().map(|&value| value as i64).collect();
+        da_kernels::rope2d(&mut q, heads, n, head_dim, &positions, cfg.rope_freq);
+        da_kernels::rope2d(&mut k, heads, n, head_dim, &positions, cfg.rope_freq);
+    }
+    let mut attn_hnd = vec![0.0; heads * n * head_dim];
+    da_kernels::attention(&q, &k, &v, heads, n, head_dim, &mut attn_hnd);
 
     // Transpose head-major [heads, n, head_dim] back to token-major
     // [n, embed] before the output projection.
@@ -281,7 +273,6 @@ fn run_attention(
         false,
         Some(&wname(layer_idx, "ls1")),
         weights,
-        backend,
     )
 }
 
@@ -319,7 +310,7 @@ pub fn vit_block(
     cfg: &ModelConfig,
     layer_idx: usize,
     weights: &Weights,
-    backend: &dyn Backend,
+    _backend: &dyn Backend,
 ) {
     assert_eq!(
         tokens.len(),
@@ -351,9 +342,8 @@ pub fn vit_block(
         &wname(layer_idx, "norm1.bias"),
         eps,
         weights,
-        backend,
     );
-    let attn_out = run_attention(&ln1, n, gh, gw, global, cfg, layer_idx, weights, backend);
+    let attn_out = run_attention(&ln1, n, gh, gw, global, cfg, layer_idx, weights);
     da_kernels::scalar::add(tokens, &attn_out);
 
     // --- MLP sub-block --- (same "tokens still holds the residual" trick)
@@ -365,7 +355,6 @@ pub fn vit_block(
         &wname(layer_idx, "norm2.bias"),
         eps,
         weights,
-        backend,
     );
     let h = run_linear(
         &ln2,
@@ -377,7 +366,6 @@ pub fn vit_block(
         true,
         None,
         weights,
-        backend,
     );
     let m = run_linear(
         &h,
@@ -389,7 +377,6 @@ pub fn vit_block(
         false,
         Some(&wname(layer_idx, "ls2")),
         weights,
-        backend,
     );
     da_kernels::scalar::add(tokens, &m);
 }
@@ -397,7 +384,67 @@ pub fn vit_block(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use da_graph::CpuBackend;
+    use da_graph::{CpuBackend, Graph};
+
+    #[test]
+    fn direct_layernorm_and_linear_match_the_retired_graph_path() {
+        let backend = CpuBackend::new();
+        let mut rng = Xorshift32(0x51A7_C0DE);
+        let input = random_vec(&mut rng, 3 * 4);
+        let mut weights = Weights::new();
+        weights.insert_f32("norm.g", random_vec(&mut rng, 4));
+        weights.insert_f32("norm.b", random_vec(&mut rng, 4));
+        weights.insert_f32("linear.w", random_vec(&mut rng, 4 * 5));
+        weights.insert_f32("linear.b", random_vec(&mut rng, 5));
+        weights.insert_f32("linear.ls", random_vec(&mut rng, 5));
+
+        let direct_norm = run_layernorm(&input, 3, 4, "norm.g", "norm.b", 1e-6, &weights);
+        let mut norm_graph = Graph::builder();
+        let norm_x = norm_graph.input(3 * 4);
+        let norm_g = norm_graph.weight("norm.g", 4);
+        let norm_b = norm_graph.weight("norm.b", 4);
+        norm_graph.layer_norm(norm_x, norm_g, norm_b, 3, 4, 1e-6);
+        norm_graph.output(norm_x);
+        let graph_norm = norm_graph
+            .build()
+            .compile()
+            .run(&backend, &[&input], &weights)
+            .remove(0);
+
+        let direct_linear = run_linear(
+            &input,
+            3,
+            4,
+            5,
+            "linear.w",
+            "linear.b",
+            true,
+            Some("linear.ls"),
+            &weights,
+        );
+        let mut linear_graph = Graph::builder();
+        let linear_x = linear_graph.input(3 * 4);
+        let linear_w = linear_graph.weight("linear.w", 4 * 5);
+        let linear_b = linear_graph.weight("linear.b", 5);
+        let linear_out = linear_graph.gemm(linear_x, linear_w, 3, 5, 4);
+        linear_graph.add_bias(linear_out, linear_b, 3, 5);
+        linear_graph.gelu(linear_out);
+        let linear_ls = linear_graph.weight("linear.ls", 5);
+        linear_graph.layer_scale(linear_out, linear_ls, 3, 5);
+        linear_graph.output(linear_out);
+        let graph_linear = linear_graph
+            .build()
+            .compile()
+            .run(&backend, &[&input], &weights)
+            .remove(0);
+
+        for (direct, graph) in direct_norm.iter().zip(graph_norm.iter()) {
+            assert_eq!(direct.to_bits(), graph.to_bits());
+        }
+        for (direct, graph) in direct_linear.iter().zip(graph_linear.iter()) {
+            assert_eq!(direct.to_bits(), graph.to_bits());
+        }
+    }
 
     fn test_cfg(embed: u32, heads: u32, head_dim: u32, mlp_hidden: u32) -> ModelConfig {
         ModelConfig {
@@ -432,7 +479,12 @@ mod tests {
     /// `vit_block` needs for one layer, sized to `cfg`. `with_ls`/`with_qkn`
     /// control whether ls1/ls2 and qnorm/knorm tensors are inserted
     /// (presence-gating, trap #3 / traps #1-2).
-    fn synthetic_weights(cfg: &ModelConfig, layer_idx: usize, with_ls: bool, with_qkn: bool) -> Weights {
+    fn synthetic_weights(
+        cfg: &ModelConfig,
+        layer_idx: usize,
+        with_ls: bool,
+        with_qkn: bool,
+    ) -> Weights {
         let embed = cfg.embed_dim as usize;
         let head_dim = cfg.head_dim as usize;
         let mlp_hidden = cfg.mlp_hidden as usize;
@@ -445,13 +497,25 @@ mod tests {
         put(wname(layer_idx, "norm1.bias"), embed, &mut w);
         put(wname(layer_idx, "norm2.weight"), embed, &mut w);
         put(wname(layer_idx, "norm2.bias"), embed, &mut w);
-        put(wname(layer_idx, "attn_qkv.weight"), embed * 3 * embed, &mut w);
+        put(
+            wname(layer_idx, "attn_qkv.weight"),
+            embed * 3 * embed,
+            &mut w,
+        );
         put(wname(layer_idx, "attn_qkv.bias"), 3 * embed, &mut w);
         put(wname(layer_idx, "attn_proj.weight"), embed * embed, &mut w);
         put(wname(layer_idx, "attn_proj.bias"), embed, &mut w);
-        put(wname(layer_idx, "mlp_fc1.weight"), embed * mlp_hidden, &mut w);
+        put(
+            wname(layer_idx, "mlp_fc1.weight"),
+            embed * mlp_hidden,
+            &mut w,
+        );
         put(wname(layer_idx, "mlp_fc1.bias"), mlp_hidden, &mut w);
-        put(wname(layer_idx, "mlp_fc2.weight"), mlp_hidden * embed, &mut w);
+        put(
+            wname(layer_idx, "mlp_fc2.weight"),
+            mlp_hidden * embed,
+            &mut w,
+        );
         put(wname(layer_idx, "mlp_fc2.bias"), embed, &mut w);
         if with_ls {
             put(wname(layer_idx, "ls1"), embed, &mut w);
@@ -479,8 +543,14 @@ mod tests {
         vit_block(&mut tokens, n, 2, 2, false, &cfg, 0, &weights, &backend);
 
         assert_eq!(tokens.len(), before.len());
-        assert_ne!(tokens, before, "a real forward pass should change token values");
-        assert!(tokens.iter().all(|v| v.is_finite()), "output must not contain NaN/Inf");
+        assert_ne!(
+            tokens, before,
+            "a real forward pass should change token values"
+        );
+        assert!(
+            tokens.iter().all(|v| v.is_finite()),
+            "output must not contain NaN/Inf"
+        );
     }
 
     #[test]
@@ -503,7 +573,17 @@ mod tests {
         let mut t_with = tokens0.clone();
         vit_block(&mut t_with, n, 2, 2, false, &cfg, 0, &w_with_ls, &backend);
         let mut t_without = tokens0.clone();
-        vit_block(&mut t_without, n, 2, 2, false, &cfg, 0, &w_without_ls, &backend);
+        vit_block(
+            &mut t_without,
+            n,
+            2,
+            2,
+            false,
+            &cfg,
+            0,
+            &w_without_ls,
+            &backend,
+        );
 
         assert_ne!(t_with, t_without);
     }
@@ -536,7 +616,17 @@ mod tests {
         cfg_always_on.qknorm_start = 0;
         cfg_always_on.rope_start = 0;
         let mut t_layer0_forced = tokens0.clone();
-        vit_block(&mut t_layer0_forced, n, 2, 2, false, &cfg_always_on, 0, &weights, &backend);
+        vit_block(
+            &mut t_layer0_forced,
+            n,
+            2,
+            2,
+            false,
+            &cfg_always_on,
+            0,
+            &weights,
+            &backend,
+        );
 
         assert_ne!(
             t_layer0, t_layer0_forced,

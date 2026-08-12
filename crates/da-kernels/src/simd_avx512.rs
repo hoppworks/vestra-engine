@@ -104,6 +104,7 @@ pub(crate) unsafe fn dot_avx512(a: &[f32], b: &[f32]) -> f32 {
     sum
 }
 
+#[inline]
 #[target_feature(enable = "avx512f")]
 pub(crate) unsafe fn scaled_add_avx512(dst: &mut [f32], scale: f32, src: &[f32]) {
     debug_assert_eq!(dst.len(), src.len());
