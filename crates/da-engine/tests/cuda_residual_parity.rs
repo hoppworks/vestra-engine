@@ -148,6 +148,72 @@ fn cuda_transformer_tail_matches_cpu_depth_and_confidence() {
     assert_close("transformer tail confidence", &expected.conf, &actual.conf);
 }
 
+#[test]
+fn cuda_transformer_tail_matches_cpu_ordered_multiview() {
+    let (Some(model), Some(image)) = (
+        std::env::var_os("VESTRA_CUDA_MODEL"),
+        std::env::var_os("VESTRA_CUDA_IMAGE"),
+    ) else {
+        return;
+    };
+    let paths = std::env::var("VESTRA_CUDA_IMAGES")
+        .ok()
+        .map(|value| value.split(':').map(PathBuf::from).collect::<Vec<_>>())
+        .filter(|paths| paths.len() >= 2)
+        .unwrap_or_else(|| vec![PathBuf::from(&image), PathBuf::from(&image)]);
+    let images = paths
+        .iter()
+        .map(|path| {
+            let image = image::open(path)
+                .expect("configured CUDA image must decode")
+                .to_rgb8();
+            (
+                image.width() as usize,
+                image.height() as usize,
+                image.into_raw(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let inputs = images
+        .iter()
+        .map(|(width, height, rgb)| ViewInput {
+            rgb_hwc_u8: rgb,
+            h: *height,
+            w: *width,
+        })
+        .collect::<Vec<_>>();
+    let mut cpu = Engine::load(PathBuf::from(&model).as_path(), QuantPref::PreferF32)
+        .expect("CPU Engine must load the configured F32 model");
+    let expected = cpu
+        .infer_multi_view_ordered(&inputs)
+        .expect("CPU ordered multiview inference must succeed");
+    let mut cuda = Engine::load(PathBuf::from(model).as_path(), QuantPref::PreferF32)
+        .expect("CUDA parity Engine must load the configured F32 model");
+    cuda.enable_cuda_transformer_tail_oracle(0)
+        .expect("CUDA transformer tail must initialize");
+    let actual = cuda
+        .infer_multi_view_ordered(&inputs)
+        .expect("CUDA ordered multiview inference must succeed");
+    assert_eq!(actual.reference_view_index, expected.reference_view_index);
+    for (index, (expected, actual)) in expected.views.iter().zip(&actual.views).enumerate() {
+        assert_eq!(
+            (actual.w, actual.h),
+            (expected.w, expected.h),
+            "view {index}"
+        );
+        assert_close(
+            &format!("transformer tail view {index} depth"),
+            &expected.depth,
+            &actual.depth,
+        );
+        assert_close(
+            &format!("transformer tail view {index} confidence"),
+            &expected.conf,
+            &actual.conf,
+        );
+    }
+}
+
 /// Exercises the PR #2 ordered multi-view control flow while every per-view
 /// MLP branch uses cached CUDA parameters. This deliberately keeps global
 /// attention on CPU; it proves that the device MLP seam does not alter view
