@@ -141,6 +141,7 @@ pub struct CudaTransformerTailExecutor {
     attention: CudaAttentionExecutor,
     mlp: CudaMlpExecutor,
     camera_reference: vestra_kernels::cuda::CudaTensorF32,
+    camera_source: vestra_kernels::cuda::CudaTensorF32,
 }
 
 #[cfg(feature = "cuda-residual-oracle")]
@@ -363,16 +364,21 @@ impl CudaTransformerTailExecutor {
         cfg: &ModelConfig,
         weights: &Weights,
     ) -> Result<Self, vestra_kernels::cuda::CudaError> {
-        let camera_reference = runtime.upload_f32(
-            &weights
-                .get_f32("vit.camera_token")
-                .expect("CUDA persistent tail requires vit.camera_token")
-                [..cfg.embed_dim as usize],
-        )?;
+        let camera = weights
+            .get_f32("vit.camera_token")
+            .expect("CUDA persistent tail requires vit.camera_token");
+        let embed = cfg.embed_dim as usize;
+        let camera_reference = runtime.upload_f32(&camera[..embed])?;
+        let camera_source = runtime.upload_f32(if camera.len() >= 2 * embed {
+            &camera[embed..2 * embed]
+        } else {
+            &camera[..embed]
+        })?;
         Ok(Self {
             attention: CudaAttentionExecutor::new(runtime.clone(), cfg, weights)?,
             mlp: CudaMlpExecutor::new(runtime, cfg, weights)?,
             camera_reference,
+            camera_source,
         })
     }
 
@@ -400,6 +406,32 @@ impl CudaTransformerTailExecutor {
         self.attention.runtime.copy_f32(tokens).ok()
     }
 
+    pub(crate) fn copy_token_segment(
+        &self,
+        tokens: &vestra_kernels::cuda::CudaTensorF32,
+        source_offset: usize,
+        len: usize,
+    ) -> Option<vestra_kernels::cuda::CudaTensorF32> {
+        self.attention
+            .runtime
+            .copy_segment_f32(tokens, source_offset, len)
+            .ok()
+    }
+
+    pub(crate) fn copy_token_segment_into(
+        &self,
+        destination: &mut vestra_kernels::cuda::CudaTensorF32,
+        destination_offset: usize,
+        source: &vestra_kernels::cuda::CudaTensorF32,
+        source_offset: usize,
+        len: usize,
+    ) -> Option<()> {
+        self.attention
+            .runtime
+            .copy_segment_into_f32(destination, destination_offset, source, source_offset, len)
+            .ok()
+    }
+
     /// Applies DA3's reference-camera token injection without a host
     /// activation handoff. Multi-view source-token injection is deferred with
     /// the multi-view persistent scheduler.
@@ -411,6 +443,23 @@ impl CudaTransformerTailExecutor {
         self.attention
             .runtime
             .overwrite_prefix_f32(tokens, &self.camera_reference, embed)
+            .ok()
+    }
+
+    pub(crate) fn inject_camera_token_for_view(
+        &self,
+        tokens: &mut vestra_kernels::cuda::CudaTensorF32,
+        view_index: usize,
+        embed: usize,
+    ) -> Option<()> {
+        let source = if view_index == 0 {
+            &self.camera_reference
+        } else {
+            &self.camera_source
+        };
+        self.attention
+            .runtime
+            .overwrite_prefix_f32(tokens, source, embed)
             .ok()
     }
 

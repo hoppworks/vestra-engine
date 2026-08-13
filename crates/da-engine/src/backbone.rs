@@ -680,6 +680,23 @@ impl<'a> Backbone<'a> {
         gw: usize,
         out_layers: &[i32],
     ) -> MultiViewBackboneOutputs {
+        #[cfg(feature = "cuda-residual-oracle")]
+        if let Some(executor) = self.transformer_tail_executor {
+            if std::env::var_os("VESTRA_TRACE_DIR").is_none()
+                && self.cfg.qknorm_start >= 0
+                && self.cfg.alt_start >= self.cfg.qknorm_start
+            {
+                if let Some(cuda_executor) = executor.persistent_cuda_tail() {
+                    return self.forward_multi_view_with_persistent_cuda_tail(
+                        views,
+                        gh,
+                        gw,
+                        out_layers,
+                        cuda_executor,
+                    );
+                }
+            }
+        }
         assert!(
             !views.is_empty(),
             "multi-view forward needs at least one view"
@@ -845,6 +862,266 @@ impl<'a> Backbone<'a> {
             .collect();
 
         MultiViewBackboneOutputs { feats, cam_tokens }
+    }
+
+    /// Device-resident counterpart of [`Self::forward_multi_view_ordered`].
+    /// It retains one token tensor per view for local layers and constructs a
+    /// temporary flattened tensor only for DA3's global layers. Both moves
+    /// are CUDA device copies; observed activations cross to the host solely
+    /// at DPT capture layers and at the final API boundary.
+    #[cfg(feature = "cuda-residual-oracle")]
+    fn forward_multi_view_with_persistent_cuda_tail(
+        &self,
+        views: &mut [Vec<f32>],
+        gh: usize,
+        gw: usize,
+        out_layers: &[i32],
+        executor: &crate::vit_block::CudaTransformerTailExecutor,
+    ) -> MultiViewBackboneOutputs {
+        assert!(
+            !views.is_empty(),
+            "multi-view forward needs at least one view"
+        );
+        let cfg = self.cfg;
+        let embed = cfg.embed_dim as usize;
+        let n = views[0].len() / embed;
+        assert!(views.iter().all(|view| view.len() == n * embed));
+        let view_count = views.len();
+        let n_special = 1 + cfg.num_register as usize;
+        assert_eq!(n, n_special + gh * gw);
+        let first_device_layer = cfg.qknorm_start as usize;
+        let view_values = n * embed;
+        let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
+        let mut local_host = views.to_vec();
+        let mut device_views: Option<Vec<vestra_kernels::cuda::CudaTensorF32>> = None;
+        let mut device_local: Option<Vec<vestra_kernels::cuda::CudaTensorF32>> = None;
+        let mut feats = vec![vec![None; view_count]; out_layers.len()];
+        let mut cam_tokens = vec![vec![None; view_count]; out_layers.len()];
+
+        for layer_idx in 0..cfg.depth as usize {
+            let started = std::time::Instant::now();
+            let global =
+                cfg.alt_start >= 0 && layer_idx as i32 >= cfg.alt_start && layer_idx % 2 == 1;
+            if layer_idx < first_device_layer {
+                if cfg.alt_start >= 0 && layer_idx == cfg.alt_start as usize {
+                    let camera = self
+                        .weights
+                        .get_f32(CAMERA_TOKEN_WEIGHT)
+                        .unwrap_or_else(|| panic!("missing weight tensor {CAMERA_TOKEN_WEIGHT:?}"));
+                    for (view_index, tokens) in views.iter_mut().enumerate() {
+                        let start = usize::from(view_index > 0) * embed;
+                        tokens[..embed].copy_from_slice(&camera[start..start + embed]);
+                    }
+                }
+                if global {
+                    let mut flattened = Vec::with_capacity(view_count * view_values);
+                    for view in views.iter() {
+                        flattened.extend_from_slice(view);
+                    }
+                    vit_block_with_views(
+                        &mut flattened,
+                        n * view_count,
+                        gh,
+                        gw,
+                        true,
+                        view_count,
+                        cfg,
+                        layer_idx,
+                        self.weights,
+                        self.backend,
+                        None,
+                        None,
+                        None,
+                        None,
+                    );
+                    for (view_index, view) in views.iter_mut().enumerate() {
+                        let offset = view_index * view_values;
+                        view.copy_from_slice(&flattened[offset..offset + view_values]);
+                    }
+                } else {
+                    for view in views.iter_mut() {
+                        vit_block_with_residual(
+                            view,
+                            n,
+                            gh,
+                            gw,
+                            false,
+                            cfg,
+                            layer_idx,
+                            self.weights,
+                            self.backend,
+                            None,
+                            None,
+                            None,
+                            None,
+                        );
+                    }
+                }
+                local_host.clone_from_slice(views);
+            } else {
+                if device_views.is_none() {
+                    device_views = Some(
+                        views
+                            .iter()
+                            .map(|view| executor.upload_tokens(view).expect("CUDA tail upload"))
+                            .collect(),
+                    );
+                }
+                let states = device_views.as_mut().expect("device views exist");
+                if cfg.alt_start >= 0 && layer_idx == cfg.alt_start as usize {
+                    for (view_index, state) in states.iter_mut().enumerate() {
+                        executor
+                            .inject_camera_token_for_view(state, view_index, embed)
+                            .expect("CUDA camera token injection");
+                    }
+                }
+                if global {
+                    let mut flattened = executor
+                        .upload_tokens(&vec![0.0_f32; view_count * view_values])
+                        .expect("CUDA global activation allocation");
+                    for (view_index, state) in states.iter().enumerate() {
+                        executor
+                            .copy_token_segment_into(
+                                &mut flattened,
+                                view_index * view_values,
+                                state,
+                                0,
+                                view_values,
+                            )
+                            .expect("CUDA global flatten");
+                    }
+                    let flattened = executor
+                        .run_tail_device(
+                            layer_idx,
+                            flattened,
+                            n * view_count,
+                            gh,
+                            gw,
+                            true,
+                            view_count,
+                            cfg,
+                        )
+                        .expect("CUDA global tail");
+                    *states = (0..view_count)
+                        .map(|view_index| {
+                            executor
+                                .copy_token_segment(
+                                    &flattened,
+                                    view_index * view_values,
+                                    view_values,
+                                )
+                                .expect("CUDA global split")
+                        })
+                        .collect();
+                } else {
+                    for state in states.iter_mut() {
+                        let previous = executor.copy_tokens(state).expect("CUDA local input copy");
+                        *state = executor
+                            .run_tail_device(layer_idx, previous, n, gh, gw, false, 1, cfg)
+                            .expect("CUDA local tail");
+                    }
+                }
+            }
+
+            if phase_profile {
+                eprintln!(
+                    "phase: multiview_transformer_block[{layer_idx}]={:.3}ms global={global} persistent_cuda={}",
+                    started.elapsed().as_secs_f64() * 1e3,
+                    layer_idx >= first_device_layer,
+                );
+            }
+            if layer_idx >= first_device_layer {
+                let states = device_views.as_ref().expect("device views exist");
+                for (slot, &wanted) in out_layers.iter().enumerate() {
+                    if wanted == layer_idx as i32 {
+                        for view_index in 0..view_count {
+                            let x = executor
+                                .download_tokens(&states[view_index])
+                                .expect("capture download");
+                            let local = if global {
+                                executor
+                                    .download_tokens(
+                                        &device_local.as_ref().expect("global capture local state")
+                                            [view_index],
+                                    )
+                                    .expect("local capture download")
+                            } else {
+                                x.clone()
+                            };
+                            let (feat, cam) = self.post_process_capture(n, n_special, &local, &x);
+                            feats[slot][view_index] = Some(feat);
+                            cam_tokens[slot][view_index] = Some(cam);
+                        }
+                    }
+                }
+                let next_is_global = layer_idx + 1 < cfg.depth as usize
+                    && cfg.alt_start >= 0
+                    && (layer_idx + 1) as i32 >= cfg.alt_start
+                    && (layer_idx + 1) % 2 == 1;
+                if !global && next_is_global {
+                    device_local = Some(
+                        states
+                            .iter()
+                            .map(|state| executor.copy_tokens(state).expect("CUDA local snapshot"))
+                            .collect(),
+                    );
+                }
+            } else {
+                for (slot, &wanted) in out_layers.iter().enumerate() {
+                    if wanted == layer_idx as i32 {
+                        for view_index in 0..view_count {
+                            let local = if global {
+                                &local_host[view_index]
+                            } else {
+                                &views[view_index]
+                            };
+                            let (feat, cam) =
+                                self.post_process_capture(n, n_special, local, &views[view_index]);
+                            feats[slot][view_index] = Some(feat);
+                            cam_tokens[slot][view_index] = Some(cam);
+                        }
+                    }
+                }
+            }
+        }
+        for (view, state) in views
+            .iter_mut()
+            .zip(device_views.expect("final device views"))
+        {
+            *view = executor
+                .download_tokens(&state)
+                .expect("final CUDA download");
+        }
+        MultiViewBackboneOutputs {
+            feats: feats
+                .into_iter()
+                .enumerate()
+                .map(|(slot, outputs)| {
+                    outputs
+                        .into_iter()
+                        .map(|value| {
+                            value.unwrap_or_else(|| {
+                                panic!("out layer {} missing capture", out_layers[slot])
+                            })
+                        })
+                        .collect()
+                })
+                .collect(),
+            cam_tokens: cam_tokens
+                .into_iter()
+                .enumerate()
+                .map(|(slot, outputs)| {
+                    outputs
+                        .into_iter()
+                        .map(|value| {
+                            value.unwrap_or_else(|| {
+                                panic!("out layer {} missing camera capture", out_layers[slot])
+                            })
+                        })
+                        .collect()
+                })
+                .collect(),
+        }
     }
 
     fn post_process_capture(
