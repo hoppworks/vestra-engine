@@ -113,11 +113,16 @@ pub struct CudaAttentionExecutor {
 #[cfg(feature = "cuda-residual-oracle")]
 struct CudaAttentionLayer {
     qkv: vestra_kernels::cuda::CudaLinearF32,
+    qk: Option<CudaQkParameters>,
+    projection: vestra_kernels::cuda::CudaLinearF32,
+}
+
+#[cfg(feature = "cuda-residual-oracle")]
+struct CudaQkParameters {
     q_gamma: vestra_kernels::cuda::CudaTensorF32,
     q_beta: vestra_kernels::cuda::CudaTensorF32,
     k_gamma: vestra_kernels::cuda::CudaTensorF32,
     k_beta: vestra_kernels::cuda::CudaTensorF32,
-    projection: vestra_kernels::cuda::CudaLinearF32,
 }
 
 #[cfg(feature = "cuda-residual-oracle")]
@@ -206,6 +211,30 @@ impl CudaAttentionExecutor {
         let embed = cfg.embed_dim as usize;
         let mut layers = Vec::with_capacity(cfg.depth as usize);
         for layer_idx in 0..cfg.depth as usize {
+            let q_gamma_name = wname(layer_idx, "attn_qnorm.weight");
+            let qk = weights
+                .get_f32(&q_gamma_name)
+                .map(|q_gamma| {
+                    Ok(CudaQkParameters {
+                        q_gamma: runtime.upload_f32(q_gamma)?,
+                        q_beta: runtime.upload_f32(
+                            weights
+                                .get_f32(&wname(layer_idx, "attn_qnorm.bias"))
+                                .unwrap(),
+                        )?,
+                        k_gamma: runtime.upload_f32(
+                            weights
+                                .get_f32(&wname(layer_idx, "attn_knorm.weight"))
+                                .unwrap(),
+                        )?,
+                        k_beta: runtime.upload_f32(
+                            weights
+                                .get_f32(&wname(layer_idx, "attn_knorm.bias"))
+                                .unwrap(),
+                        )?,
+                    })
+                })
+                .transpose()?;
             layers.push(CudaAttentionLayer {
                 qkv: runtime.prepare_linear_f32(
                     embed,
@@ -216,26 +245,7 @@ impl CudaAttentionExecutor {
                     weights.get_f32(&wname(layer_idx, "attn_qkv.bias")).unwrap(),
                     None,
                 )?,
-                q_gamma: runtime.upload_f32(
-                    weights
-                        .get_f32(&wname(layer_idx, "attn_qnorm.weight"))
-                        .unwrap(),
-                )?,
-                q_beta: runtime.upload_f32(
-                    weights
-                        .get_f32(&wname(layer_idx, "attn_qnorm.bias"))
-                        .unwrap(),
-                )?,
-                k_gamma: runtime.upload_f32(
-                    weights
-                        .get_f32(&wname(layer_idx, "attn_knorm.weight"))
-                        .unwrap(),
-                )?,
-                k_beta: runtime.upload_f32(
-                    weights
-                        .get_f32(&wname(layer_idx, "attn_knorm.bias"))
-                        .unwrap(),
-                )?,
+                qk,
                 projection: runtime.prepare_linear_f32(
                     embed,
                     embed,
@@ -274,22 +284,26 @@ impl AttentionExecutor for CudaAttentionExecutor {
             .runtime
             .split_qkv_hnd_f32(&qkv, rows, heads, head_dim)
             .ok()?;
-        let positions = self.runtime.upload_f32(positions_yx?).ok()?;
-        self.runtime
-            .qk_norm_rope_f32_da3_base(
-                &mut q,
-                &mut k,
-                &layer.q_gamma,
-                &layer.q_beta,
-                &layer.k_gamma,
-                &layer.k_beta,
-                &positions,
-                heads,
-                rows,
-                100.0,
-                QK_NORM_EPS,
-            )
-            .ok()?;
+        if let Some(qk) = layer.qk.as_ref() {
+            let positions = self.runtime.upload_f32(positions_yx?).ok()?;
+            self.runtime
+                .qk_norm_rope_f32_da3_base(
+                    &mut q,
+                    &mut k,
+                    &qk.q_gamma,
+                    &qk.q_beta,
+                    &qk.k_gamma,
+                    &qk.k_beta,
+                    &positions,
+                    heads,
+                    rows,
+                    100.0,
+                    QK_NORM_EPS,
+                )
+                .ok()?;
+        } else {
+            return None;
+        }
         let hnd = self
             .runtime
             .attention_online_f32(&q, &k, &v, heads, rows, head_dim)
