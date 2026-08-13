@@ -32,3 +32,8 @@ this split was prepared. The local repositories are committed and buildable;
 publishing the kernel repository, pushing its baseline commit, and replacing
 the local development patch with that immutable revision are required before a
 network-only clone can build.
+
+The committed local pair was fresh-cloned into sibling directories and checked
+successfully at engine `0c65739` and kernel `b35a917`. That validates the
+documented local-development topology without relying on the original working
+trees.
