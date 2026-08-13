@@ -1,0 +1,150 @@
+trial=1
+da bench: model=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf image=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg
+protocol: 1 warmup + median over 10 timed iterations
+iter[0]_ms=175.311
+iter[1]_ms=165.989
+iter[2]_ms=161.599
+iter[3]_ms=165.088
+iter[4]_ms=162.411
+iter[5]_ms=161.153
+iter[6]_ms=164.755
+iter[7]_ms=176.854
+iter[8]_ms=167.357
+iter[9]_ms=169.737
+median_ms=165.539
+p95_ms=176.160
+trial=2
+da bench: model=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf image=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg
+protocol: 1 warmup + median over 10 timed iterations
+iter[0]_ms=176.689
+iter[1]_ms=169.208
+iter[2]_ms=169.816
+iter[3]_ms=161.758
+iter[4]_ms=175.179
+iter[5]_ms=187.704
+iter[6]_ms=185.257
+iter[7]_ms=186.285
+iter[8]_ms=183.895
+iter[9]_ms=171.271
+median_ms=175.934
+p95_ms=187.065
+trial=3
+da bench: model=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf image=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg
+protocol: 1 warmup + median over 10 timed iterations
+iter[0]_ms=171.483
+iter[1]_ms=185.336
+iter[2]_ms=160.628
+iter[3]_ms=158.391
+iter[4]_ms=182.060
+iter[5]_ms=173.322
+iter[6]_ms=158.041
+iter[7]_ms=160.766
+iter[8]_ms=159.157
+iter[9]_ms=158.423
+median_ms=160.697
+p95_ms=183.862
+trial=4
+da bench: model=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf image=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg
+protocol: 1 warmup + median over 10 timed iterations
+iter[0]_ms=184.719
+iter[1]_ms=159.691
+iter[2]_ms=160.542
+iter[3]_ms=183.799
+iter[4]_ms=186.298
+iter[5]_ms=185.169
+iter[6]_ms=160.726
+iter[7]_ms=186.966
+iter[8]_ms=173.611
+iter[9]_ms=184.221
+median_ms=184.010
+p95_ms=186.665
+trial=5
+da bench: model=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf image=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg
+protocol: 1 warmup + median over 10 timed iterations
+iter[0]_ms=172.120
+iter[1]_ms=163.093
+iter[2]_ms=184.784
+iter[3]_ms=185.269
+iter[4]_ms=186.092
+iter[5]_ms=185.074
+iter[6]_ms=182.065
+iter[7]_ms=162.015
+iter[8]_ms=153.275
+iter[9]_ms=157.332
+median_ms=177.093
+p95_ms=185.722
+trial=6
+da bench: model=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf image=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg
+protocol: 1 warmup + median over 10 timed iterations
+iter[0]_ms=168.897
+iter[1]_ms=184.453
+iter[2]_ms=165.619
+iter[3]_ms=159.996
+iter[4]_ms=162.121
+iter[5]_ms=159.699
+iter[6]_ms=158.215
+iter[7]_ms=160.120
+iter[8]_ms=172.049
+iter[9]_ms=173.669
+median_ms=163.870
+p95_ms=179.600
+trial=7
+da bench: model=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf image=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg
+protocol: 1 warmup + median over 10 timed iterations
+iter[0]_ms=164.999
+iter[1]_ms=168.388
+iter[2]_ms=185.863
+iter[3]_ms=184.217
+iter[4]_ms=185.712
+iter[5]_ms=186.595
+iter[6]_ms=157.686
+iter[7]_ms=161.022
+iter[8]_ms=184.115
+iter[9]_ms=170.178
+median_ms=177.146
+p95_ms=186.266
+trial=8
+da bench: model=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf image=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg
+protocol: 1 warmup + median over 10 timed iterations
+iter[0]_ms=168.872
+iter[1]_ms=166.258
+iter[2]_ms=165.156
+iter[3]_ms=187.158
+iter[4]_ms=165.420
+iter[5]_ms=163.282
+iter[6]_ms=164.735
+iter[7]_ms=181.685
+iter[8]_ms=186.902
+iter[9]_ms=187.277
+median_ms=167.565
+p95_ms=187.223
+trial=9
+da bench: model=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf image=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg
+protocol: 1 warmup + median over 10 timed iterations
+iter[0]_ms=181.972
+iter[1]_ms=178.922
+iter[2]_ms=187.207
+iter[3]_ms=175.155
+iter[4]_ms=167.681
+iter[5]_ms=162.698
+iter[6]_ms=183.286
+iter[7]_ms=183.370
+iter[8]_ms=181.799
+iter[9]_ms=183.720
+median_ms=181.886
+p95_ms=185.638
+trial=10
+da bench: model=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf image=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg
+protocol: 1 warmup + median over 10 timed iterations
+iter[0]_ms=170.133
+iter[1]_ms=157.170
+iter[2]_ms=159.434
+iter[3]_ms=167.584
+iter[4]_ms=166.823
+iter[5]_ms=176.101
+iter[6]_ms=160.617
+iter[7]_ms=172.662
+iter[8]_ms=181.618
+iter[9]_ms=177.871
+median_ms=168.859
+p95_ms=179.932

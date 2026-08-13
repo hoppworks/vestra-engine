@@ -10,6 +10,7 @@ benchmark provenance.
 | Engine split commit | `2d0820d` |
 | Kernel snapshot before rename | `b70af69` |
 | Kernel split/rename commit | `022b85a` |
+| Rust 2024 AVX-512 compatibility fix | `b35a917` |
 | Local validation toolchain | rustc 1.93.0, Cargo 1.93.0 |
 | Target benchmark toolchain | rustc 1.97.1, LLVM 22.1.6 |
 | Release profile | opt-level 3, Thin LTO, one codegen unit, abort panic |
