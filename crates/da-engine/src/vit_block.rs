@@ -69,8 +69,8 @@ pub trait ResidualAddExecutor: Send + Sync {
 }
 
 /// Execution seam for a complete DA3 MLP branch. Implementations own the
-/// FC1/FC2 parameter lifetime and return the token-major FC2 result; the
-/// residual addition remains an explicitly separate operator boundary.
+/// LayerNorm/FC1/FC2 parameter lifetime and return the token-major FC2
+/// result; the residual addition remains an explicitly separate boundary.
 pub trait MlpExecutor {
     fn run_mlp(&self, layer_idx: usize, input: &[f32], rows: usize) -> Vec<f32>;
 }
@@ -81,11 +81,14 @@ pub trait MlpExecutor {
 #[cfg(feature = "cuda-residual-oracle")]
 pub struct CudaMlpExecutor {
     runtime: vestra_kernels::cuda::CudaRuntime,
+    ln_eps: f32,
     layers: Vec<CudaMlpLayer>,
 }
 
 #[cfg(feature = "cuda-residual-oracle")]
 struct CudaMlpLayer {
+    norm2_gamma: vestra_kernels::cuda::CudaTensorF32,
+    norm2_beta: vestra_kernels::cuda::CudaTensorF32,
     fc1: vestra_kernels::cuda::CudaLinearF32,
     fc2: vestra_kernels::cuda::CudaLinearF32,
 }
@@ -105,6 +108,10 @@ impl CudaMlpExecutor {
         let hidden = cfg.mlp_hidden as usize;
         let mut layers = Vec::with_capacity(cfg.depth as usize);
         for layer_idx in 0..cfg.depth as usize {
+            let norm2_gamma =
+                runtime.upload_f32(weights.get_f32(&wname(layer_idx, "norm2.weight")).unwrap())?;
+            let norm2_beta =
+                runtime.upload_f32(weights.get_f32(&wname(layer_idx, "norm2.bias")).unwrap())?;
             let fc1 = runtime.prepare_linear_f32(
                 embed,
                 hidden,
@@ -123,9 +130,18 @@ impl CudaMlpExecutor {
                 weights.get_f32(&wname(layer_idx, "mlp_fc2.bias")).unwrap(),
                 weights.get_f32(&wname(layer_idx, "ls2")),
             )?;
-            layers.push(CudaMlpLayer { fc1, fc2 });
+            layers.push(CudaMlpLayer {
+                norm2_gamma,
+                norm2_beta,
+                fc1,
+                fc2,
+            });
         }
-        Ok(Self { runtime, layers })
+        Ok(Self {
+            runtime,
+            ln_eps: cfg.ln_eps,
+            layers,
+        })
     }
 }
 
@@ -136,8 +152,22 @@ impl MlpExecutor for CudaMlpExecutor {
         let input = self
             .runtime
             .upload_f32(input)
-            .expect("CUDA MLP normalized-input upload must succeed");
-        let mut hidden = layer.fc1.run(&input, rows).expect("CUDA FC1 must succeed");
+            .expect("CUDA MLP token upload must succeed");
+        let normalized = self
+            .runtime
+            .layernorm_f32(
+                &input,
+                &layer.norm2_gamma,
+                &layer.norm2_beta,
+                rows,
+                layer.fc1.input_features(),
+                self.ln_eps,
+            )
+            .expect("CUDA LayerNorm must succeed");
+        let mut hidden = layer
+            .fc1
+            .run(&normalized, rows)
+            .expect("CUDA FC1 must succeed");
         self.runtime
             .gelu_f32_in_place(&mut hidden)
             .expect("CUDA GELU must succeed");
@@ -560,21 +590,19 @@ pub(crate) fn vit_block_with_views(
     let attention_elapsed = attention_started.elapsed();
 
     // --- MLP sub-block --- (same "tokens still holds the residual" trick)
-    let ln2_started = std::time::Instant::now();
-    let ln2 = run_layernorm(
-        tokens,
-        n,
-        embed,
-        &wname(layer_idx, "norm2.weight"),
-        &wname(layer_idx, "norm2.bias"),
-        eps,
-        weights,
-    );
-    let ln2_elapsed = ln2_started.elapsed();
-    let fc1_started = std::time::Instant::now();
+    let mlp_started = std::time::Instant::now();
     let m = if let Some(executor) = mlp_executor {
-        executor.run_mlp(layer_idx, &ln2, n)
+        executor.run_mlp(layer_idx, tokens, n)
     } else {
+        let ln2 = run_layernorm(
+            tokens,
+            n,
+            embed,
+            &wname(layer_idx, "norm2.weight"),
+            &wname(layer_idx, "norm2.bias"),
+            eps,
+            weights,
+        );
         let h = run_linear(
             &ln2,
             n,
@@ -601,11 +629,10 @@ pub(crate) fn vit_block_with_views(
     add_residual(tokens, &m, residual_executor);
     if phase_profile {
         eprintln!(
-            "phase: block[{layer_idx}] ln1={:.3}ms attention={:.3}ms ln2={:.3}ms mlp={:.3}ms fc2_residual=0.000ms",
+            "phase: block[{layer_idx}] ln1={:.3}ms attention={:.3}ms mlp_with_ln2={:.3}ms",
             ln1_elapsed.as_secs_f64() * 1e3,
             attention_elapsed.as_secs_f64() * 1e3,
-            ln2_elapsed.as_secs_f64() * 1e3,
-            fc1_started.elapsed().as_secs_f64() * 1e3,
+            mlp_started.elapsed().as_secs_f64() * 1e3,
         );
     }
 }
