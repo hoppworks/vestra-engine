@@ -1,8 +1,8 @@
-use da_engine::{Backbone, ModelConfig, PosEmbedCache};
 use da_gguf::GgufFile;
 use da_graph::{CpuBackend, Weights};
 use da_parity::{assert_parity, dumps_path, Dumps};
 use std::path::Path;
+use vestra_engine::{Backbone, ModelConfig, PosEmbedCache};
 
 /// Real DA3-BASE model, provided via `../scripts/download_model.py` — same
 /// convention as `tests/config_from_model.rs`/`tests/pos_embed_parity.rs`.
@@ -18,7 +18,7 @@ fn model() -> Option<GgufFile> {
 /// Loads a 2D linear weight tensor and transposes it from GGUF/PyTorch's
 /// `[out_features, in_features]` row-major layout into the
 /// `[in_features, out_features]` layout `da_graph::Op::Gemm` (and therefore
-/// `da_engine::vit_block::run_linear`) requires — see `vit_block.rs`'s
+/// `vestra_engine::vit_block::run_linear`) requires — see `vit_block.rs`'s
 /// module doc comment ("Linear-weight orientation") for the full rationale.
 /// This is a test-local, minimal stand-in for Task 20's real weight-loading.
 fn load_transposed_2d(
@@ -59,30 +59,30 @@ fn load_weights(g: &GgufFile, cfg: &ModelConfig) -> Weights {
     let mut w = Weights::new();
 
     for name in [
-        da_engine::PATCH_EMBED_WEIGHT,
-        da_engine::PATCH_EMBED_BIAS,
-        da_engine::POS_EMBED_WEIGHT,
-        da_engine::CLS_TOKEN_WEIGHT,
+        vestra_engine::PATCH_EMBED_WEIGHT,
+        vestra_engine::PATCH_EMBED_BIAS,
+        vestra_engine::POS_EMBED_WEIGHT,
+        vestra_engine::CLS_TOKEN_WEIGHT,
     ] {
         let t = g
             .tensor_f32(name)
             .unwrap_or_else(|e| panic!("missing/unreadable tensor {name:?}: {e}"));
         w.insert_f32(name, t.data);
     }
-    if let Some(rt) = load_1d(g, da_engine::REGISTER_TOKENS_WEIGHT) {
-        w.insert_f32(da_engine::REGISTER_TOKENS_WEIGHT, rt);
+    if let Some(rt) = load_1d(g, vestra_engine::REGISTER_TOKENS_WEIGHT) {
+        w.insert_f32(vestra_engine::REGISTER_TOKENS_WEIGHT, rt);
     }
     // Final vit.norm + camera_token: both required by Backbone::forward's
     // post-process (vit.norm always) and camera-token injection (only when
     // cfg.alt_start >= 0, but harmless to load unconditionally).
-    for name in [da_engine::VIT_NORM_WEIGHT, da_engine::VIT_NORM_BIAS] {
+    for name in [vestra_engine::VIT_NORM_WEIGHT, vestra_engine::VIT_NORM_BIAS] {
         let t = g
             .tensor_f32(name)
             .unwrap_or_else(|e| panic!("missing/unreadable tensor {name:?}: {e}"));
         w.insert_f32(name, t.data);
     }
-    if let Some(ct) = load_1d(g, da_engine::CAMERA_TOKEN_WEIGHT) {
-        w.insert_f32(da_engine::CAMERA_TOKEN_WEIGHT, ct);
+    if let Some(ct) = load_1d(g, vestra_engine::CAMERA_TOKEN_WEIGHT) {
+        w.insert_f32(vestra_engine::CAMERA_TOKEN_WEIGHT, ct);
     }
 
     for i in 0..cfg.depth as usize {
@@ -156,7 +156,7 @@ fn load_weights(g: &GgufFile, cfg: &ModelConfig) -> Weights {
 
 /// Gates `Backbone::forward` (the full 12-layer `vit_block` stack, plus
 /// camera-token injection / local-global alternation / final-norm
-/// doubled-width post-processing — see `da_engine::backbone`'s module doc
+/// doubled-width post-processing — see `vestra_engine::backbone`'s module doc
 /// comment) against the `feat_{5,7,9,11}` AND `cam_token_{5,7,9,11}`
 /// reference dumps — "the most important milestone of M5" per this task's
 /// brief.
@@ -206,7 +206,7 @@ fn backbone_forward_matches_reference_feat_and_cam_layers() {
     let mut cache = PosEmbedCache::new();
     let mut tokens = Vec::new();
     let (gh, gw) =
-        da_engine::prepare_tokens(&input.data, h, w, &cfg, &weights, &mut cache, &mut tokens);
+        vestra_engine::prepare_tokens(&input.data, h, w, &cfg, &weights, &mut cache, &mut tokens);
 
     let backend = CpuBackend::new();
     let bb = Backbone::new(&cfg, &weights, &backend);

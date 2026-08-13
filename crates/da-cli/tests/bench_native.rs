@@ -340,7 +340,8 @@ fn bench_prints_parsable_median_and_p95_against_synthetic_model() {
     }
     img.save(&image_path).expect("write synthetic input PNG");
 
-    let mut cmd = assert_cmd::Command::cargo_bin("da").expect("da binary should build");
+    let mut cmd =
+        assert_cmd::Command::cargo_bin("vestra-engine").expect("Vestra Engine binary should build");
     cmd.arg("bench")
         .arg("--model")
         .arg(&model_path)

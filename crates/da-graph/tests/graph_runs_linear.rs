@@ -1,7 +1,7 @@
-use da_graph::{CpuBackend, Graph, Weights};
+use vestra_graph::{CpuBackend, Graph, Weights};
 
 /// y = gelu(x @ W + b), computed once through a `Graph`/`Plan`/`CpuBackend`
-/// and once by calling the `da_kernels` scalar functions directly on the
+/// and once by calling the `vestra_kernels` scalar functions directly on the
 /// same data; the two must match within float tolerance.
 #[test]
 fn linear_gelu_graph_matches_manual() {
@@ -35,11 +35,11 @@ fn linear_gelu_graph_matches_manual() {
     assert_eq!(outputs.len(), 1);
     let graph_y = &outputs[0];
 
-    // --- manual path: same math, straight from da_kernels ---
+    // --- manual path: same math, straight from vestra_kernels ---
     let mut manual = vec![0.0f32; m * n];
-    da_kernels::scalar::gemm_f32(m, n, k, &x, &w, &mut manual);
-    da_kernels::scalar::add_bias_rows(&mut manual, m, n, &bias);
-    da_kernels::scalar::gelu(&mut manual);
+    vestra_kernels::scalar::gemm_f32(m, n, k, &x, &w, &mut manual);
+    vestra_kernels::scalar::add_bias_rows(&mut manual, m, n, &bias);
+    vestra_kernels::scalar::gelu(&mut manual);
 
     assert_eq!(graph_y.len(), manual.len());
     let max_diff = graph_y

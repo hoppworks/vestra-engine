@@ -6,7 +6,7 @@ use crate::Arena;
 /// Executes a single [`Op`] against a mutable [`Arena`] (where activation
 /// tensors live) and an immutable [`Weights`] map (where named GGUF
 /// weights live). Implementations dispatch each `Op` variant to the
-/// matching `da_kernels` function.
+/// matching `vestra_kernels` function.
 pub trait Backend {
     fn execute(&self, op: &Op, arena: &mut Arena, weights: &Weights);
 }

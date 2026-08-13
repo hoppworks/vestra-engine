@@ -30,7 +30,7 @@
 //! deliberate, not a silent bug: every kernel built in Tasks 16-19
 //! (`patch_embed`, `vit_block`, `dpt_head`, `cam_pose`) only ever calls
 //! `Weights::get_f32` — none of them call `Weights::get_q8_0`, even though
-//! `da_kernels::gemm_q8_0` (Task 9) exists as a standalone kernel. Wiring a
+//! `vestra_kernels::gemm_q8_0` (Task 9) exists as a standalone kernel. Wiring a
 //! real q8_0-compute path through `vit_block`/`dpt_head`'s linear/conv ops
 //! is future work; until then, honoring `QuantPref::PreferQ8_0` by storing
 //! q8_0 blocks would just mean every consumer's `get_f32` call panics on a
@@ -90,7 +90,7 @@ pub enum QuantPref {
 ///   (rank 4 even for a 1x1 kernel — no squeeze anywhere in the converter),
 ///   so they're untouched by the rank-2 check and keep GGUF's native
 ///   `[out_c, in_c, kh, kw]` order, which is exactly what
-///   `da_kernels::conv::conv2d`'s `weight` parameter expects.
+///   `vestra_kernels::conv::conv2d`'s `weight` parameter expects.
 /// - `vit.pos_embed`, `vit.cls_token`, `vit.register_tokens`,
 ///   `vit.camera_token` are DINOv2-style `nn.Parameter`s with a leading
 ///   batch/singleton dim (e.g. `pos_embed = nn.Parameter(torch.zeros(1, rows,
@@ -157,6 +157,26 @@ pub struct InferOut {
 pub struct DepthInferOut {
     pub depth: Vec<f32>,
     pub conf: Vec<f32>,
+    pub h: usize,
+    pub w: usize,
+}
+
+/// Borrowed RGB input for one ordered multi-view window.
+#[derive(Debug, Clone, Copy)]
+pub struct ViewInput<'a> {
+    pub rgb_hwc_u8: &'a [u8],
+    pub h: usize,
+    pub w: usize,
+}
+
+/// Output of the ordered multi-view path.
+///
+/// View zero is the reference view. The higher-level reference-selection
+/// wrapper will reorder windows before calling this path and restore the
+/// original order afterward, matching the pinned C++ PR #2 implementation.
+pub struct MultiViewInferOut {
+    pub views: Vec<InferOut>,
+    pub reference_view_index: usize,
     pub h: usize,
     pub w: usize,
 }
@@ -289,6 +309,113 @@ impl Engine {
             conf: depth_out.conf,
             h: depth_out.h,
             w: depth_out.w,
+        })
+    }
+
+    /// Executes one genuine ordered multi-view backbone pass.
+    ///
+    /// Local transformer blocks run independently per view, while global
+    /// blocks attend over the flattened `views * tokens_per_view` sequence.
+    /// This method deliberately assumes view zero is already the reference;
+    /// saddle-balanced reference selection is the next parity slice.
+    pub fn infer_multi_view_ordered(
+        &mut self,
+        inputs: &[ViewInput<'_>],
+    ) -> Result<MultiViewInferOut, EngineError> {
+        if inputs.is_empty() {
+            return Err(EngineError::EmptyViewSet);
+        }
+
+        let mut token_views = Vec::with_capacity(inputs.len());
+        let mut processed_shape = None;
+        let mut grid_shape = None;
+        for (index, input) in inputs.iter().enumerate() {
+            let expected = input.h.saturating_mul(input.w).saturating_mul(3);
+            if input.rgb_hwc_u8.len() != expected {
+                return Err(EngineError::InvalidImageBuffer {
+                    index,
+                    expected,
+                    actual: input.rgb_hwc_u8.len(),
+                });
+            }
+            let mut chw = Vec::new();
+            let (ph, pw) = preprocess(input.rgb_hwc_u8, input.h, input.w, &self.cfg, &mut chw);
+            if let Some((expected_h, expected_w)) = processed_shape {
+                if (ph, pw) != (expected_h, expected_w) {
+                    return Err(EngineError::InconsistentViewShape {
+                        index,
+                        expected_h,
+                        expected_w,
+                        actual_h: ph,
+                        actual_w: pw,
+                    });
+                }
+            } else {
+                processed_shape = Some((ph, pw));
+            }
+
+            let mut tokens = Vec::new();
+            let (gh, gw) = prepare_tokens(
+                &chw,
+                ph,
+                pw,
+                &self.cfg,
+                &self.weights,
+                &mut self.pos_cache,
+                &mut tokens,
+            );
+            if let Some(expected) = grid_shape {
+                debug_assert_eq!((gh, gw), expected);
+            } else {
+                grid_shape = Some((gh, gw));
+            }
+            token_views.push(tokens);
+        }
+
+        let (ph, pw) = processed_shape.expect("non-empty inputs set processed shape");
+        let (gh, gw) = grid_shape.expect("non-empty inputs set grid shape");
+        let backbone_out = {
+            let backbone = Backbone::new(&self.cfg, &self.weights, &self.backend);
+            backbone.forward_multi_view_ordered(&mut token_views, gh, gw, &self.cfg.out_layers)
+        };
+
+        let last_layer = backbone_out
+            .cam_tokens
+            .last()
+            .ok_or(EngineError::EmptyOutLayers)?;
+        let mut outputs = Vec::with_capacity(inputs.len());
+        for view_index in 0..inputs.len() {
+            let features = backbone_out
+                .feats
+                .iter()
+                .map(|layer| layer[view_index].clone())
+                .collect::<Vec<_>>();
+            let depth_out = dpt_head::dpt_head_with_workspace(
+                &features,
+                ph,
+                pw,
+                &self.cfg,
+                &self.weights,
+                &mut self.uv_cache,
+                &mut self.wino_cache,
+                &self.head_workspace,
+            );
+            let pose_out = cam_pose(&last_layer[view_index], ph, pw, &self.cfg, &self.weights)?;
+            outputs.push(InferOut {
+                depth: depth_out.depth,
+                conf: depth_out.conf,
+                h: depth_out.h,
+                w: depth_out.w,
+                extrinsics: pose_out.extrinsics,
+                intrinsics: pose_out.intrinsics,
+            });
+        }
+
+        Ok(MultiViewInferOut {
+            views: outputs,
+            reference_view_index: 0,
+            h: ph,
+            w: pw,
         })
     }
 

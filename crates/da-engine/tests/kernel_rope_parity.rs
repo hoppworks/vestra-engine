@@ -1,5 +1,5 @@
-use da_kernels::rope2d;
 use da_parity::{assert_parity, dumps_path, Dumps};
+use vestra_kernels::rope2d;
 
 #[test]
 fn rope2d_matches_reference() {

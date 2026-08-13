@@ -67,8 +67,8 @@
 //! `affine_inverse(affine_inverse(x)) == x` round-trip property.
 
 use da_graph::Weights;
-use da_kernels::gemm::{Gemm, ScalarGemm};
-use da_kernels::scalar;
+use vestra_kernels::gemm::{Gemm, ScalarGemm};
+use vestra_kernels::scalar;
 
 use crate::config::EngineError;
 use crate::ModelConfig;

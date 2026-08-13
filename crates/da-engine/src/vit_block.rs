@@ -58,7 +58,7 @@
 //! requires everywhere else in `da-graph`.
 use crate::ModelConfig;
 use da_graph::{Backend, Weights};
-use da_kernels::gemm::{Da3ProjectionGemm, Gemm};
+use vestra_kernels::gemm::{Da3ProjectionGemm, Gemm};
 
 /// The per-head QK-LayerNorm epsilon (trap #1 from the Task 17 brief):
 /// torch's *default* `nn.LayerNorm` eps, **not** the block's `ln_eps`. See
@@ -91,7 +91,7 @@ fn run_layernorm(
     let beta = weights
         .get_f32(beta_name)
         .unwrap_or_else(|| panic!("Weights missing f32 entry {beta_name:?}"));
-    da_kernels::scalar::layernorm(&mut out, rows, cols, gamma, beta, eps);
+    vestra_kernels::scalar::layernorm(&mut out, rows, cols, gamma, beta, eps);
     out
 }
 
@@ -121,7 +121,7 @@ fn run_linear(
     if !gelu {
         if let Some(name) = ls_name {
             if let Some(gamma) = weights.get_f32(name) {
-                if da_kernels::linear_bias_scale_f32_da3_base(
+                if vestra_kernels::linear_bias_scale_f32_da3_base(
                     m, n, k, x_in, weight, bias, gamma, &mut out,
                 ) {
                     return out;
@@ -130,13 +130,13 @@ fn run_linear(
         }
     }
     Da3ProjectionGemm.gemm(m, n, k, x_in, weight, &mut out);
-    da_kernels::scalar::add_bias_rows(&mut out, m, n, bias);
+    vestra_kernels::scalar::add_bias_rows(&mut out, m, n, bias);
     if gelu {
-        da_kernels::Kernels::detect().gelu(&mut out);
+        vestra_kernels::Kernels::detect().gelu(&mut out);
     }
     if let Some(name) = ls_name {
         if let Some(gamma) = weights.get_f32(name) {
-            da_kernels::scalar::layerscale(&mut out, m, n, gamma);
+            vestra_kernels::scalar::layerscale(&mut out, m, n, gamma);
         }
     }
     out
@@ -157,6 +157,7 @@ fn run_attention(
     gh: usize,
     gw: usize,
     global: bool,
+    view_count: usize,
     cfg: &ModelConfig,
     layer_idx: usize,
     weights: &Weights,
@@ -181,7 +182,7 @@ fn run_attention(
         .unwrap();
     let qkv_bias = weights.get_f32(&wname(layer_idx, "attn_qkv.bias")).unwrap();
     let direct_qkv =
-        da_kernels::qkv_f32_da3_base(ln1_out, qkv_weight, qkv_bias, &mut q, &mut k, &mut v);
+        vestra_kernels::qkv_f32_da3_base(ln1_out, qkv_weight, qkv_bias, &mut q, &mut k, &mut v);
     let qkv_elapsed = qkv_started.elapsed();
     let pack_elapsed;
     if direct_qkv {
@@ -233,16 +234,27 @@ fn run_attention(
     let n_special = 1 + cfg.num_register as usize;
     let pos_yx: Vec<f32> = if use_rope {
         let mut p = vec![0f32; n * 2];
-        for t in n_special..n.min(n_special + gh * gw) {
-            if global {
-                p[2 * t] = 1.0;
-                p[2 * t + 1] = 1.0;
-            } else {
-                let idx = t - n_special;
-                let row = idx / gw;
-                let col = idx % gw;
-                p[2 * t] = (row + 1) as f32;
-                p[2 * t + 1] = (col + 1) as f32;
+        let tokens_per_view = n_special + gh * gw;
+        assert!(view_count > 0, "view_count must be non-zero");
+        assert_eq!(
+            n,
+            tokens_per_view * view_count,
+            "token count must equal tokens_per_view * view_count"
+        );
+        for view in 0..view_count {
+            let base = view * tokens_per_view;
+            for local_t in n_special..tokens_per_view {
+                let t = base + local_t;
+                if global {
+                    p[2 * t] = 1.0;
+                    p[2 * t + 1] = 1.0;
+                } else {
+                    let idx = local_t - n_special;
+                    let row = idx / gw;
+                    let col = idx % gw;
+                    p[2 * t] = (row + 1) as f32;
+                    p[2 * t + 1] = (col + 1) as f32;
+                }
             }
         }
         p
@@ -270,7 +282,7 @@ fn run_attention(
             .unwrap_or_else(|| panic!("Weights missing f32 entry {k_beta_name:?}"));
         if use_rope {
             let positions: Vec<i64> = pos_yx.iter().map(|&value| value as i64).collect();
-            used_fused_qk_norm_rope = da_kernels::qk_norm_rope_f32_da3_base(
+            used_fused_qk_norm_rope = vestra_kernels::qk_norm_rope_f32_da3_base(
                 &mut q,
                 &mut k,
                 q_gamma,
@@ -283,7 +295,7 @@ fn run_attention(
             );
         }
         if !used_fused_qk_norm_rope {
-            da_kernels::scalar::layernorm(
+            vestra_kernels::scalar::layernorm(
                 &mut q,
                 heads * n,
                 head_dim,
@@ -291,7 +303,7 @@ fn run_attention(
                 q_beta,
                 QK_NORM_EPS,
             );
-            da_kernels::scalar::layernorm(
+            vestra_kernels::scalar::layernorm(
                 &mut k,
                 heads * n,
                 head_dim,
@@ -303,13 +315,13 @@ fn run_attention(
     }
     if use_rope && !used_fused_qk_norm_rope {
         let positions: Vec<i64> = pos_yx.iter().map(|&value| value as i64).collect();
-        da_kernels::rope2d(&mut q, heads, n, head_dim, &positions, cfg.rope_freq);
-        da_kernels::rope2d(&mut k, heads, n, head_dim, &positions, cfg.rope_freq);
+        vestra_kernels::rope2d(&mut q, heads, n, head_dim, &positions, cfg.rope_freq);
+        vestra_kernels::rope2d(&mut k, heads, n, head_dim, &positions, cfg.rope_freq);
     }
     let position_elapsed = position_started.elapsed();
     let core_started = std::time::Instant::now();
     let mut attn_hnd = vec![0.0; heads * n * head_dim];
-    da_kernels::attention(&q, &k, &v, heads, n, head_dim, &mut attn_hnd);
+    vestra_kernels::attention(&q, &k, &v, heads, n, head_dim, &mut attn_hnd);
     let core_elapsed = core_started.elapsed();
 
     // Transpose head-major [heads, n, head_dim] back to token-major
@@ -376,12 +388,13 @@ fn run_attention(
 ///   silently running the wrong FFN math. Only `"mlp"` (DA3-BASE) is
 ///   implemented by this function.
 #[allow(clippy::too_many_arguments)]
-pub fn vit_block(
+pub(crate) fn vit_block_with_views(
     tokens: &mut [f32],
     n: usize,
     gh: usize,
     gw: usize,
     global: bool,
+    view_count: usize,
     cfg: &ModelConfig,
     layer_idx: usize,
     weights: &Weights,
@@ -409,7 +422,7 @@ pub fn vit_block(
     // `tokens` is only read by `run_layernorm`/`run_attention` (both
     // operate on fresh Vec<f32> copies via their mini-graphs' own arenas),
     // so it still holds the pre-attention residual right up until the
-    // in-place `da_kernels::scalar::add` below.
+    // in-place `vestra_kernels::scalar::add` below.
     let ln1_started = std::time::Instant::now();
     let ln1 = run_layernorm(
         tokens,
@@ -422,8 +435,8 @@ pub fn vit_block(
     );
     let ln1_elapsed = ln1_started.elapsed();
     let attention_started = std::time::Instant::now();
-    let attn_out = run_attention(&ln1, n, gh, gw, global, cfg, layer_idx, weights);
-    da_kernels::Kernels::detect().add(tokens, &attn_out);
+    let attn_out = run_attention(&ln1, n, gh, gw, global, view_count, cfg, layer_idx, weights);
+    vestra_kernels::Kernels::detect().add(tokens, &attn_out);
     let attention_elapsed = attention_started.elapsed();
 
     // --- MLP sub-block --- (same "tokens still holds the residual" trick)
@@ -463,7 +476,7 @@ pub fn vit_block(
         Some(&wname(layer_idx, "ls2")),
         weights,
     );
-    da_kernels::Kernels::detect().add(tokens, &m);
+    vestra_kernels::Kernels::detect().add(tokens, &m);
     if phase_profile {
         eprintln!(
             "phase: block[{layer_idx}] ln1={:.3}ms attention={:.3}ms ln2={:.3}ms fc1_gelu={:.3}ms fc2_residual={:.3}ms",
@@ -474,6 +487,27 @@ pub fn vit_block(
             fc2_started.elapsed().as_secs_f64() * 1e3,
         );
     }
+}
+
+/// Runs a transformer block for one view.
+///
+/// Multi-view global attention uses the internal [`vit_block_with_views`]
+/// entry point so RoPE special-token boundaries repeat for every view.
+#[allow(clippy::too_many_arguments)]
+pub fn vit_block(
+    tokens: &mut [f32],
+    n: usize,
+    gh: usize,
+    gw: usize,
+    global: bool,
+    cfg: &ModelConfig,
+    layer_idx: usize,
+    weights: &Weights,
+    backend: &dyn Backend,
+) {
+    vit_block_with_views(
+        tokens, n, gh, gw, global, 1, cfg, layer_idx, weights, backend,
+    );
 }
 
 #[cfg(test)]
@@ -749,7 +783,7 @@ mod tests {
 
     /// Deterministic, dependency-free PRNG (Xorshift32) for reproducible
     /// synthetic test data (matching the convention already used in
-    /// `da-kernels/src/conv.rs`'s tests).
+    /// `vestra-kernels/src/conv.rs`'s tests).
     struct Xorshift32(u32);
     impl Xorshift32 {
         fn next_f32(&mut self) -> f32 {

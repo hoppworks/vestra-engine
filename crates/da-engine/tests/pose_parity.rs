@@ -1,8 +1,8 @@
-use da_engine::{cam_pose, ModelConfig};
 use da_gguf::GgufFile;
 use da_graph::Weights;
 use da_parity::{assert_parity, dumps_path, Dumps};
 use std::path::Path;
+use vestra_engine::{cam_pose, ModelConfig};
 
 /// Real DA3-BASE model, provided via `../scripts/download_model.py` — same
 /// convention as `tests/backbone_parity.rs`/`tests/dpt_parity.rs`.

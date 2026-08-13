@@ -1,7 +1,7 @@
 use crate::ModelConfig;
 use da_graph::Weights;
-use da_kernels::conv::conv2d;
-use da_kernels::gemm::FaerGemm;
+use vestra_kernels::conv::conv2d;
+use vestra_kernels::gemm::FaerGemm;
 
 /// Weight-tensor names for the conv-patchify projection.
 ///
@@ -32,7 +32,7 @@ const CHANNELS: usize = 3;
 /// in exactly this order before the CLS-token concat.
 ///
 /// `weight` is expected in GGUF/PyTorch `OIHW` layout: `[embed_dim, 3, patch, patch]`
-/// (matches `da_kernels::conv::conv2d`'s `weight: out_c*in_c*kh*kw` layout).
+/// (matches `vestra_kernels::conv::conv2d`'s `weight: out_c*in_c*kh*kw` layout).
 ///
 /// Returns `(gh, gw)`, the patch-grid resolution — the same `(h, w)` pair that
 /// should be used as the `PosEmbedCache` key for this call.

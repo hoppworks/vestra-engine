@@ -1,5 +1,5 @@
-use da_gguf::{dequantize_q8_0, BlockQ8_0, QK8_0};
 use half::f16;
+use vestra_gguf::{dequantize_q8_0, BlockQ8_0, QK8_0};
 
 #[test]
 fn dequant_matches_scale_times_qs() {

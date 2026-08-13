@@ -1,4 +1,4 @@
-//! End-to-end tests for `da_engine::Engine` — Task 20's facade wiring
+//! End-to-end tests for `vestra_engine::Engine` — Task 20's facade wiring
 //! `preprocess -> prepare_tokens -> Backbone -> dpt_head + cam_pose`.
 //!
 //! Two independent tests here, deliberately covering different things:
@@ -24,11 +24,11 @@
 //!    task actually adds: composing Tasks 14-19 into a single working
 //!    `Engine::load`/`Engine::infer` call.
 
-use da_engine::{Engine, QuantPref};
 use da_gguf::GgufFile;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use vestra_engine::{Engine, QuantPref};
 
 // ---------------------------------------------------------------------
 // Real-model/dump-gated parity test (Step 1 of the task brief).
@@ -475,8 +475,9 @@ fn write_temp_gguf(bytes: &[u8]) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path =
-        std::env::temp_dir().join(format!("da_engine_e2e_synth_{pid}_{nanos}_{counter}.gguf"));
+    let path = std::env::temp_dir().join(format!(
+        "vestra_engine_e2e_synth_{pid}_{nanos}_{counter}.gguf"
+    ));
     let mut f = std::fs::File::create(&path).expect("create temp synthetic gguf");
     f.write_all(bytes).expect("write temp synthetic gguf");
     path

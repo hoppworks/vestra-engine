@@ -40,7 +40,8 @@ fn infer_writes_nonempty_depth_and_valid_pose_json() {
     let out_depth = tmp_dir.join(format!("da_cli_smoke_depth_{pid}_{nanos}.pfm"));
     let out_pose = tmp_dir.join(format!("da_cli_smoke_pose_{pid}_{nanos}.json"));
 
-    let mut cmd = assert_cmd::Command::cargo_bin("da").expect("da binary should build");
+    let mut cmd =
+        assert_cmd::Command::cargo_bin("vestra-engine").expect("Vestra Engine binary should build");
     cmd.arg("infer")
         .arg("--model")
         .arg(&model)

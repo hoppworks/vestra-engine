@@ -10,12 +10,12 @@
 //! `residual_conv_unit`/`feature_fusion`/`interp_bilinear_ac` helpers) —
 //! read directly during this task's investigation, not reverse-engineered.
 //!
-//! ## Design choice: direct `da_kernels` calls, not a `da_graph::Op`/`Plan` mini-graph
+//! ## Design choice: direct `vestra_kernels` calls, not a `da_graph::Op`/`Plan` mini-graph
 //!
 //! Task 17's `vit_block` module composes via small single-purpose
 //! `da_graph::Plan`s (documented there as a known perf escape hatch, not a
 //! blocker). This module goes one step further and skips `da_graph`
-//! entirely, calling `da_kernels::conv2d`/`conv_transpose2d`/
+//! entirely, calling `vestra_kernels::conv2d`/`conv_transpose2d`/
 //! `bilinear_resize_align_corners`/`scalar::*` directly:
 //!
 //! - `da_graph::Op` has no `ConvTranspose2d` or align-corners-resize variant
@@ -73,17 +73,17 @@
 //! `scratch.out2a.weight`/`.bias`, `scratch.out2b.weight`/`.bias`.
 
 use da_graph::Weights;
-use da_kernels::conv::{
+use rayon::prelude::*;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use vestra_kernels::conv::{
     conv2d, conv3x3_winograd_f2_prepared, conv3x3_winograd_f2_prepared_relu_input,
     conv3x3_winograd_f2_prepared_resize_align_corners, conv3x3_winograd_f4_prepared,
     conv_transpose2d, prepare_winograd_f2_filter, prepare_winograd_f4_filter, WinogradF2Filter,
     WinogradF4Filter,
 };
-use da_kernels::gemm::{BlisOrFaerGemm, Gemm};
-use da_kernels::{bilinear_resize_align_corners, scalar, Kernels};
-use rayon::prelude::*;
-use std::cell::RefCell;
-use std::collections::HashMap;
+use vestra_kernels::gemm::{BlisOrFaerGemm, Gemm};
+use vestra_kernels::{bilinear_resize_align_corners, scalar, Kernels};
 
 use crate::uv_embed::UvEmbedCache;
 use crate::ModelConfig;

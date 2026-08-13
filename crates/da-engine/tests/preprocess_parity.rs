@@ -1,5 +1,5 @@
-use da_engine::{preprocess, ModelConfig};
 use da_parity::{assert_parity, dumps_path, Dumps};
+use vestra_engine::{preprocess, ModelConfig};
 
 /// Gates `preprocess` against `raw_image` -> `input_image` in the reference
 /// dump, per Task 15's brief. `raw_image` is documented as 224x224x3 HWC,
@@ -13,7 +13,7 @@ use da_parity::{assert_parity, dumps_path, Dumps};
 /// normalization convention implemented in `preprocess` (255-scaling,
 /// mean/std order, channel order, NCHW layout) is currently UNVERIFIED
 /// against ground truth here — see the doc comment on
-/// `da_engine::preprocess` for what it *was* cross-checked against
+/// `vestra_engine::preprocess` for what it *was* cross-checked against
 /// (the C++ reference engine's `src/preprocess.cpp`).
 #[test]
 fn preprocess_matches_reference_input_image() {

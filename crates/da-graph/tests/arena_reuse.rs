@@ -1,4 +1,4 @@
-use da_graph::arena::Arena;
+use vestra_graph::arena::Arena;
 
 #[test]
 fn disjoint_lifetimes_reuse_memory() {

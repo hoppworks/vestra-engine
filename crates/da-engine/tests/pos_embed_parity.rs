@@ -1,8 +1,8 @@
-use da_engine::{ModelConfig, PosEmbedCache};
 use da_gguf::GgufFile;
 use da_graph::Weights;
 use da_parity::{assert_parity, dumps_path, Dumps};
 use std::path::Path;
+use vestra_engine::{ModelConfig, PosEmbedCache};
 
 /// Real DA3-BASE model, provided via `../scripts/download_model.py` — same
 /// convention as `tests/config_from_model.rs`.
@@ -19,15 +19,15 @@ fn model() -> Option<GgufFile> {
 /// straight out of the model GGUF into a `Weights` map. This is a
 /// test-local, minimal stand-in for Task 20's real weight-loading — it only
 /// loads the tensors this test exercises, by the tensor names documented on
-/// `da_engine::{PATCH_EMBED_WEIGHT, PATCH_EMBED_BIAS, POS_EMBED_WEIGHT,
+/// `vestra_engine::{PATCH_EMBED_WEIGHT, PATCH_EMBED_BIAS, POS_EMBED_WEIGHT,
 /// CLS_TOKEN_WEIGHT}`.
 fn load_weights(g: &GgufFile) -> Weights {
     let mut w = Weights::new();
     for name in [
-        da_engine::PATCH_EMBED_WEIGHT,
-        da_engine::PATCH_EMBED_BIAS,
-        da_engine::POS_EMBED_WEIGHT,
-        da_engine::CLS_TOKEN_WEIGHT,
+        vestra_engine::PATCH_EMBED_WEIGHT,
+        vestra_engine::PATCH_EMBED_BIAS,
+        vestra_engine::POS_EMBED_WEIGHT,
+        vestra_engine::CLS_TOKEN_WEIGHT,
     ] {
         let t = g
             .tensor_f32(name)
@@ -36,8 +36,8 @@ fn load_weights(g: &GgufFile) -> Weights {
     }
     // Register tokens are optional (see REGISTER_TOKENS_WEIGHT doc comment) —
     // load only if present, so models without them still work.
-    if let Ok(t) = g.tensor_f32(da_engine::REGISTER_TOKENS_WEIGHT) {
-        w.insert_f32(da_engine::REGISTER_TOKENS_WEIGHT, t.data);
+    if let Ok(t) = g.tensor_f32(vestra_engine::REGISTER_TOKENS_WEIGHT) {
+        w.insert_f32(vestra_engine::REGISTER_TOKENS_WEIGHT, t.data);
     }
     w
 }
@@ -51,7 +51,7 @@ fn load_weights(g: &GgufFile) -> Weights {
 /// absent, which is the case in this environment — same pattern as
 /// `tests/preprocess_parity.rs` and `tests/config_from_model.rs`. That means
 /// the bicubic pos-embed interpolation implemented in
-/// `da_engine::pos_embed` is numerically UNVERIFIED against ground truth
+/// `vestra_engine::pos_embed` is numerically UNVERIFIED against ground truth
 /// here; it was instead transcribed directly from the C++ reference's
 /// `DinoBackbone::interp_pos_embed` (`../src/dino_backbone.cpp`) — see that
 /// module's doc comments for the byte-for-byte comparison.
@@ -85,7 +85,7 @@ fn prepare_tokens_matches_reference_pos_embed_added() {
 
     let mut cache = PosEmbedCache::new();
     let mut tokens = Vec::new();
-    da_engine::prepare_tokens(&input.data, h, w, &cfg, &weights, &mut cache, &mut tokens);
+    vestra_engine::prepare_tokens(&input.data, h, w, &cfg, &weights, &mut cache, &mut tokens);
 
     assert_parity(
         &tokens,

@@ -1,9 +1,9 @@
 [package]
-name = "da-graph"
+name = "vestra-graph"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-da-kernels = { path = "../da-kernels" }
-da-gguf = { path = "../da-gguf" }
+vestra-kernels.workspace = true
+da-gguf = { package = "vestra-gguf", path = "../da-gguf" }

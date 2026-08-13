@@ -46,7 +46,7 @@
 //! defaults — `alt_start: -1`, `cat_token: true` — were cross-referenced
 //! against `include/da_gguf_keys.h` and `../src/model_loader.cpp`, not
 //! observed on a real GGUF file directly).
-use crate::vit_block::vit_block;
+use crate::vit_block::{vit_block, vit_block_with_views};
 use crate::ModelConfig;
 use da_graph::{Backend, Weights};
 
@@ -75,6 +75,17 @@ pub struct BackboneOutputs {
     /// `cam_tokens[o]` is `[2*embed_dim]` when `cfg.cat_token`, else
     /// `[embed_dim]`.
     pub cam_tokens: Vec<Vec<f32>>,
+}
+
+/// Ordered multi-view captures, indexed as `[out_layer][view]`.
+///
+/// View zero is the reference view and receives camera-token slot zero;
+/// every later view receives the source-camera slot. Reference-view
+/// selection and restoration are intentionally a separate operation, as in
+/// the pinned C++ oracle's `forward_mv` wrapper.
+pub struct MultiViewBackboneOutputs {
+    pub feats: Vec<Vec<Vec<f32>>>,
+    pub cam_tokens: Vec<Vec<Vec<f32>>>,
 }
 
 /// Owns nothing — just bundles the `cfg`/`weights`/`backend` a full
@@ -227,6 +238,168 @@ impl<'a> Backbone<'a> {
         BackboneOutputs { feats, cam_tokens }
     }
 
+    /// Runs the pinned PR #2 ordered multi-view transformer schedule.
+    ///
+    /// Local blocks execute independently for every view. Global blocks
+    /// flatten all view-major token buffers into one attention sequence,
+    /// then restore the per-view slices. This is the material distinction
+    /// between real multi-view inference and a loop of single-image calls.
+    /// View zero is assumed to have already been selected as the reference.
+    pub fn forward_multi_view_ordered(
+        &self,
+        views: &mut [Vec<f32>],
+        gh: usize,
+        gw: usize,
+        out_layers: &[i32],
+    ) -> MultiViewBackboneOutputs {
+        assert!(
+            !views.is_empty(),
+            "multi-view forward needs at least one view"
+        );
+        let cfg = self.cfg;
+        let embed = cfg.embed_dim as usize;
+        let n = views[0].len() / embed;
+        assert_eq!(views[0].len(), n * embed);
+        for (index, view) in views.iter().enumerate() {
+            assert_eq!(
+                view.len(),
+                n * embed,
+                "view {index} has a different token shape"
+            );
+        }
+        let view_count = views.len();
+        let n_special = 1 + cfg.num_register as usize;
+        assert_eq!(n, n_special + gh * gw);
+
+        let mut local_x = views.to_vec();
+        let mut feats = vec![vec![None; view_count]; out_layers.len()];
+        let mut cam_tokens = vec![vec![None; view_count]; out_layers.len()];
+
+        for layer_idx in 0..cfg.depth as usize {
+            if cfg.alt_start >= 0 && layer_idx == cfg.alt_start as usize {
+                let camera = self.weights.get_f32(CAMERA_TOKEN_WEIGHT).unwrap_or_else(|| {
+                    panic!(
+                        "missing weight tensor {CAMERA_TOKEN_WEIGHT:?} required by cfg.alt_start={}",
+                        cfg.alt_start
+                    )
+                });
+                assert!(
+                    camera.len() >= embed,
+                    "{CAMERA_TOKEN_WEIGHT} must contain a reference camera token"
+                );
+                if view_count > 1 {
+                    assert!(
+                        camera.len() >= 2 * embed,
+                        "{CAMERA_TOKEN_WEIGHT} must contain reference and source camera tokens"
+                    );
+                }
+                for (view_index, tokens) in views.iter_mut().enumerate() {
+                    let slot = usize::from(view_index > 0);
+                    let start = slot * embed;
+                    tokens[..embed].copy_from_slice(&camera[start..start + embed]);
+                }
+            }
+
+            let global =
+                cfg.alt_start >= 0 && layer_idx as i32 >= cfg.alt_start && layer_idx % 2 == 1;
+            if global {
+                let mut flattened = Vec::with_capacity(view_count * n * embed);
+                for view in views.iter() {
+                    flattened.extend_from_slice(view);
+                }
+                vit_block_with_views(
+                    &mut flattened,
+                    n * view_count,
+                    gh,
+                    gw,
+                    true,
+                    view_count,
+                    cfg,
+                    layer_idx,
+                    self.weights,
+                    self.backend,
+                );
+                for (view_index, view) in views.iter_mut().enumerate() {
+                    let start = view_index * n * embed;
+                    view.copy_from_slice(&flattened[start..start + n * embed]);
+                }
+            } else {
+                for view in views.iter_mut() {
+                    vit_block(
+                        view,
+                        n,
+                        gh,
+                        gw,
+                        false,
+                        cfg,
+                        layer_idx,
+                        self.weights,
+                        self.backend,
+                    );
+                }
+            }
+
+            for (slot, &wanted) in out_layers.iter().enumerate() {
+                if wanted == layer_idx as i32 {
+                    for view_index in 0..view_count {
+                        let local = if global {
+                            &local_x[view_index]
+                        } else {
+                            &views[view_index]
+                        };
+                        let (feat, cam) =
+                            self.post_process_capture(n, n_special, local, &views[view_index]);
+                        feats[slot][view_index] = Some(feat);
+                        cam_tokens[slot][view_index] = Some(cam);
+                    }
+                }
+            }
+
+            if !global {
+                local_x.clone_from_slice(views);
+            }
+        }
+
+        let feats = feats
+            .into_iter()
+            .enumerate()
+            .map(|(layer_slot, views)| {
+                views
+                    .into_iter()
+                    .enumerate()
+                    .map(|(view_index, value)| {
+                        value.unwrap_or_else(|| {
+                            panic!(
+                                "out layer {} was not reached for view {view_index}",
+                                out_layers[layer_slot]
+                            )
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        let cam_tokens = cam_tokens
+            .into_iter()
+            .enumerate()
+            .map(|(layer_slot, views)| {
+                views
+                    .into_iter()
+                    .enumerate()
+                    .map(|(view_index, value)| {
+                        value.unwrap_or_else(|| {
+                            panic!(
+                                "out layer {} was not reached for view {view_index}",
+                                out_layers[layer_slot]
+                            )
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+
+        MultiViewBackboneOutputs { feats, cam_tokens }
+    }
+
     fn post_process_capture(
         &self,
         n: usize,
@@ -249,7 +422,7 @@ impl<'a> Backbone<'a> {
         if !cfg.cat_token {
             let cam = x[0..embed].to_vec();
             let mut feat = x[n_special * embed..n * embed].to_vec();
-            da_kernels::scalar::layernorm(&mut feat, n_patch, embed, nw, nb, cfg.ln_eps);
+            vestra_kernels::scalar::layernorm(&mut feat, n_patch, embed, nw, nb, cfg.ln_eps);
             return (feat, cam);
         }
 
@@ -257,7 +430,7 @@ impl<'a> Backbone<'a> {
         cam.extend_from_slice(&local_x[0..embed]);
         cam.extend_from_slice(&x[0..embed]);
         let mut normed_x = x[n_special * embed..n * embed].to_vec();
-        da_kernels::scalar::layernorm(&mut normed_x, n_patch, embed, nw, nb, cfg.ln_eps);
+        vestra_kernels::scalar::layernorm(&mut normed_x, n_patch, embed, nw, nb, cfg.ln_eps);
         let mut feat = vec![0f32; n_patch * 2 * embed];
         for t in 0..n_patch {
             let lrow = &local_x[(n_special + t) * embed..(n_special + t + 1) * embed];
@@ -306,7 +479,7 @@ impl<'a> Backbone<'a> {
                 // feat = vit_norm(x), patches n_special..n (token-0/CLS and
                 // any register tokens stripped).
                 let mut f = xx[n_special * embed..n * embed].to_vec();
-                da_kernels::scalar::layernorm(&mut f, n_patch, embed, nw, nb, cfg.ln_eps);
+                vestra_kernels::scalar::layernorm(&mut f, n_patch, embed, nw, nb, cfg.ln_eps);
                 feats.push(f);
             }
             return BackboneOutputs { feats, cam_tokens };
@@ -329,7 +502,7 @@ impl<'a> Backbone<'a> {
             // stripped). Normalize x's patch rows first (layernorm operates
             // row-major over n_patch rows of embed_dim), then interleave.
             let mut normed_x = xx[n_special * embed..n * embed].to_vec();
-            da_kernels::scalar::layernorm(&mut normed_x, n_patch, embed, nw, nb, cfg.ln_eps);
+            vestra_kernels::scalar::layernorm(&mut normed_x, n_patch, embed, nw, nb, cfg.ln_eps);
 
             let mut f = vec![0f32; n_patch * 2 * embed];
             for t in 0..n_patch {
@@ -557,5 +730,54 @@ mod tests {
         assert_eq!(out.cam_tokens[0].len(), 2 * embed);
         assert!(out.feats[0].iter().all(|v| v.is_finite()));
         assert!(out.cam_tokens[0].iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn ordered_multiview_s1_is_bitwise_equal_to_single_view() {
+        let mut cfg = test_cfg(4);
+        cfg.alt_start = 2;
+        cfg.out_layers = vec![1, 3];
+        let weights = synthetic_weights(&cfg);
+        let backend = CpuBackend::new();
+        let embed = cfg.embed_dim as usize;
+        let mut tokens: Vec<f32> = (0..5 * embed)
+            .map(|index| index as f32 * 0.013 - 0.4)
+            .collect();
+        let mut views = vec![tokens.clone()];
+        let bb = Backbone::new(&cfg, &weights, &backend);
+
+        let single = bb.forward(&mut tokens, 2, 2, &cfg.out_layers);
+        let multi = bb.forward_multi_view_ordered(&mut views, 2, 2, &cfg.out_layers);
+
+        assert_eq!(multi.feats.len(), single.feats.len());
+        for layer in 0..single.feats.len() {
+            assert_eq!(multi.feats[layer][0], single.feats[layer]);
+            assert_eq!(multi.cam_tokens[layer][0], single.cam_tokens[layer]);
+        }
+        assert_eq!(views[0], tokens);
+    }
+
+    #[test]
+    fn ordered_multiview_global_attention_couples_views() {
+        let mut cfg = test_cfg(4);
+        cfg.alt_start = 2;
+        cfg.out_layers = vec![3];
+        let weights = synthetic_weights(&cfg);
+        let backend = CpuBackend::new();
+        let embed = cfg.embed_dim as usize;
+        let first: Vec<f32> = (0..5 * embed)
+            .map(|index| index as f32 * 0.01 - 0.2)
+            .collect();
+        let near = first.iter().map(|value| value + 0.01).collect::<Vec<_>>();
+        let far = first.iter().map(|value| 2.0 - value).collect::<Vec<_>>();
+        let bb = Backbone::new(&cfg, &weights, &backend);
+
+        let mut near_pair = vec![first.clone(), near];
+        let mut far_pair = vec![first, far];
+        let near_out = bb.forward_multi_view_ordered(&mut near_pair, 2, 2, &cfg.out_layers);
+        let far_out = bb.forward_multi_view_ordered(&mut far_pair, 2, 2, &cfg.out_layers);
+
+        assert_ne!(near_out.feats[0][0], far_out.feats[0][0]);
+        assert_ne!(near_pair[0], far_pair[0]);
     }
 }

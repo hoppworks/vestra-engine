@@ -1,5 +1,5 @@
-use da_gguf::GgufFile;
 use std::path::Path;
+use vestra_gguf::GgufFile;
 
 fn dumps() -> std::path::PathBuf {
     // Tests laufen im Crate-Verzeichnis; ../../../dumps relativ dazu ist der C++-Repo-Root/dumps.

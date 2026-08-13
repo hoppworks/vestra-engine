@@ -1,4 +1,4 @@
-use da_parity::compare;
+use vestra_parity::compare;
 
 #[test]
 fn within_tolerance_passes() {

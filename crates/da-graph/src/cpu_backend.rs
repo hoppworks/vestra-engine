@@ -1,5 +1,5 @@
-use da_kernels::gemm::{FaerGemm, Gemm};
-use da_kernels::Kernels;
+use vestra_kernels::gemm::{FaerGemm, Gemm};
+use vestra_kernels::Kernels;
 
 use crate::backend::Backend;
 use crate::graph::{Op, RopeParams, Weights};
@@ -8,7 +8,7 @@ use crate::Arena;
 
 /// The single-threaded CPU backend: SIMD-dispatched elementwise/attention
 /// kernels (via [`Kernels`]) plus a GEMM implementation (via [`Gemm`]),
-/// both from `da-kernels`.
+/// both from `vestra-kernels`.
 pub struct CpuBackend {
     kernels: Kernels,
     gemm: Box<dyn Gemm>,
@@ -31,7 +31,7 @@ impl Default for CpuBackend {
 }
 
 /// Local newtype wrapping a `&dyn Gemm` so it can itself implement the
-/// (foreign) `Gemm` trait — needed because `da_kernels::conv::conv2d` is
+/// (foreign) `Gemm` trait — needed because `vestra_kernels::conv::conv2d` is
 /// generic over `impl Gemm` (so `Sized`), and `Box<dyn Gemm>` can't be
 /// passed there directly, and implementing `Gemm` for `Box<dyn Gemm>`
 /// itself would violate the orphan rules (both the trait and `Box<dyn
@@ -147,7 +147,7 @@ impl Backend for CpuBackend {
                 // `assert_disjoint_or_shared_read` in debug builds).
                 let x_slice = unsafe { std::slice::from_raw_parts_mut(x_ptr, x_len) };
                 let bias_slice = unsafe { std::slice::from_raw_parts(bias_ptr, bias_len) };
-                da_kernels::scalar::add_bias_rows(x_slice, rows, cols, bias_slice);
+                vestra_kernels::scalar::add_bias_rows(x_slice, rows, cols, bias_slice);
             }
             Op::Gelu { x } => {
                 self.kernels.gelu(arena.buf(x));
@@ -174,7 +174,7 @@ impl Backend for CpuBackend {
                 let x_slice = unsafe { std::slice::from_raw_parts_mut(x_ptr, x_len) };
                 let g_slice = unsafe { std::slice::from_raw_parts(g_ptr, g_len) };
                 let b_slice = unsafe { std::slice::from_raw_parts(b_ptr, b_len) };
-                da_kernels::scalar::layernorm(x_slice, rows, cols, g_slice, b_slice, eps);
+                vestra_kernels::scalar::layernorm(x_slice, rows, cols, g_slice, b_slice, eps);
             }
             Op::LayerScale {
                 x,
@@ -193,7 +193,7 @@ impl Backend for CpuBackend {
                 // `assert_disjoint_or_shared_read` in debug builds).
                 let x_slice = unsafe { std::slice::from_raw_parts_mut(x_ptr, x_len) };
                 let gamma_slice = unsafe { std::slice::from_raw_parts(gamma_ptr, gamma_len) };
-                da_kernels::scalar::layerscale(x_slice, rows, cols, gamma_slice);
+                vestra_kernels::scalar::layerscale(x_slice, rows, cols, gamma_slice);
             }
             Op::Attention {
                 q,
@@ -262,7 +262,7 @@ impl Backend for CpuBackend {
                     // embed_dim — at the torch-default eps (qk_norm_eps),
                     // distinct from any block-level LayerNorm's eps. This is
                     // trap #1/#2 from Task 17's brief.
-                    da_kernels::scalar::layernorm(
+                    vestra_kernels::scalar::layernorm(
                         q_slice,
                         heads * n,
                         head_dim,
@@ -274,7 +274,7 @@ impl Backend for CpuBackend {
                 if let Some(((g_ptr, g_len), (b_ptr, b_len))) = knorm_raw {
                     let g_slice = unsafe { std::slice::from_raw_parts(g_ptr, g_len) };
                     let b_slice = unsafe { std::slice::from_raw_parts(b_ptr, b_len) };
-                    da_kernels::scalar::layernorm(
+                    vestra_kernels::scalar::layernorm(
                         k_slice,
                         heads * n,
                         head_dim,
@@ -287,14 +287,14 @@ impl Backend for CpuBackend {
                     let pos_slice = unsafe { std::slice::from_raw_parts(pos_ptr, pos_len) };
                     // Positions are stored as f32 in the arena (which only
                     // holds f32) but are always integer-valued; round-trip
-                    // through i64 for `da_kernels::rope2d`'s signature.
+                    // through i64 for `vestra_kernels::rope2d`'s signature.
                     let pos_yx_i64: Vec<i64> =
                         pos_slice.iter().map(|&v| v.round() as i64).collect();
-                    da_kernels::rope2d(q_slice, heads, n, head_dim, &pos_yx_i64, freq);
-                    da_kernels::rope2d(k_slice, heads, n, head_dim, &pos_yx_i64, freq);
+                    vestra_kernels::rope2d(q_slice, heads, n, head_dim, &pos_yx_i64, freq);
+                    vestra_kernels::rope2d(k_slice, heads, n, head_dim, &pos_yx_i64, freq);
                 }
 
-                da_kernels::attention(q_slice, k_slice, v_slice, heads, n, head_dim, out_slice);
+                vestra_kernels::attention(q_slice, k_slice, v_slice, heads, n, head_dim, out_slice);
             }
             Op::Conv2d {
                 input,
@@ -339,7 +339,7 @@ impl Backend for CpuBackend {
                 let bias_slice =
                     bias_raw.map(|(ptr, len)| unsafe { std::slice::from_raw_parts(ptr, len) });
                 let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr, out_len) };
-                da_kernels::conv2d(
+                vestra_kernels::conv2d(
                     input_slice,
                     in_c,
                     ih,

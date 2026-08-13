@@ -1,5 +1,5 @@
-use da_gguf::GgufFile;
 use std::path::Path;
+use vestra_gguf::GgufFile;
 
 fn model() -> Option<GgufFile> {
     // Ein echtes DA3-BASE-Modell wird via ../scripts/download_model.py bereitgestellt.

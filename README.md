@@ -1,49 +1,71 @@
-# depth-anything-rs
+# Vestra Engine
 
-Rust rebuild work for Depth Anything inference, parity, and reproducible
-performance measurement.
+Vestra Engine is a native Rust inference runtime for video-to-world
+reconstruction. It is the optimized neural engine imported by the Vestra
+product repository; scene stitching, TSDF fusion, exports, and the browser
+studio live in Vestra itself.
 
-The repository-level entry point is [the case-study README](../README.md).
-For the current architecture, accepted/rejected decisions and the exact
-workhorse reproduction route, read the [CPU-F32 status guide](docs/DA3_CPU_F32_STATUS.md).
+## Scope
 
-## Active direction: reproducible runtime case study
+- GGUF model loading
+- calibrated preprocessing
+- single-view depth, confidence, and camera pose
+- ordered multi-view local/global transformer execution
+- optimized CPU execution on AVX-512 x86-64
+- a future native CUDA backend through `vestra-kernels`
 
-The active deliverable is a same-model comparison of the official PyTorch
-DA3-BASE runtime, the optimized C++/ggml port, and this Rust reimplementation.
-It reports performance only together with numerical fidelity and raw evidence.
+The public product name is Vestra Engine. Legacy `da-*` source-directory and
+internal dependency aliases are retained temporarily to preserve the verified
+code history while public Cargo packages use `vestra-*` names.
 
-Video, point-cloud and floorplan work remains preserved as future exploration;
-it is not part of the benchmark claim or the primary portfolio story.
+## Multi-view status
 
-## Benchmark direction
+The first parity tracer bullet is implemented:
 
-The canonical host is a Ryzen 9 9950X plus RTX 5080. CPU and CUDA results are
-separate. Direct runtime claims use identical DA3-BASE F32 weights; C++ Q8_0
-and Q4_K are separately labelled compression/quality trade-offs.
+- local blocks execute independently per view;
+- global blocks attend over one view-major flattened sequence;
+- reference and source views receive distinct camera-token slots;
+- RoPE special-token boundaries repeat correctly for every view;
+- the `S=1` ordered multi-view path is bitwise equal to single-view execution;
+- a synthetic test proves that a second view affects the first view at global
+  attention layers.
 
-- [Locked protocol](docs/benchmarks/2026-08-workhorse/PROTOCOL.md)
-- [Original baseline study](docs/benchmarks/2026-08-workhorse/RESULTS.md)
-- [Raw timing data](docs/benchmarks/2026-08-workhorse/raw-results.json)
-- [Fidelity data](docs/benchmarks/2026-08-workhorse/quality-results.json)
-- [Sources and attribution](docs/benchmarks/2026-08-workhorse/SOURCES.md)
+Saddle-balanced reference selection for `S>=3`, real-model C++ parity for
+`S=2,3,12`, CUDA, and streaming-window orchestration remain open work.
 
-The existing `da bench` command provides the current Rust timing primitive:
+## CPU-F32 baseline
+
+The current durable 20-trial same-machine study on an AMD Ryzen 9 9950X,
+16 benchmark threads, DA3-BASE F32, and 504×336 measured:
+
+| Runtime | Mean of trial medians | 95% CI |
+|---|---:|---:|
+| Vestra Engine | 171.141 ms | [168.042, 174.241] ms |
+| C++ / ggml | 238.789 ms | [237.406, 240.172] ms |
+
+That is 28.3% lower latency, or 39.5% higher throughput. It is a single-image
+CPU-F32 result and must not be presented as proof of multi-view, quantized, GPU,
+or complete reconstruction performance. Raw trials and provenance live under
+`docs/benchmarks/2026-08-workhorse/`.
+
+## Build and test
 
 ```bash
-cargo run -p da-cli -- bench --model /path/to/model.gguf --image /path/to/image.png
+cargo test --workspace
+cargo run -p vestra-cli -- infer \
+  --model /path/to/model.gguf \
+  --image /path/to/image.jpg \
+  --output /tmp/depth.pfm
 ```
 
-The original baseline report is intentionally retained as historical evidence;
-it is not the current performance headline. The current qualified CPU-F32
-result and the corresponding workhorse artifact are described in the status
-guide.
+Target-hardware release builds use `-C target-cpu=znver5` on the Ryzen 9
+9950X. Benchmark commands and accepted environment switches are documented in
+the benchmark bundle rather than hidden in this README.
 
-## Future work
+## Repository boundary
 
-The DA3/COLMAP 3D-floorplan experiment and point-cloud browser are preserved but
-must not be presented as completed product functionality or included in this
-runtime leaderboard.
+- `vestra-engine`: model semantics and execution
+- `vestra-kernels`: qualified CPU/CUDA kernels
+- `vestra`: video reconstruction, scene format, local service, CLI, and studio
 
-Parity is gated against the C++ repo's reference dumps in `../dumps/`
-(read-only).
+See [docs/PROVENANCE.md](docs/PROVENANCE.md) for the extraction record.

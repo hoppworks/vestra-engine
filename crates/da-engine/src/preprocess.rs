@@ -1,5 +1,5 @@
 use crate::ModelConfig;
-use da_kernels::bilinear_resize;
+use vestra_kernels::bilinear_resize;
 
 /// The exact pixel-coordinate mapping produced by [`preprocess_letterbox`].
 ///

@@ -1,8 +1,8 @@
-use da_engine::{dpt_head_debug, ModelConfig, UvEmbedCache};
 use da_gguf::GgufFile;
 use da_graph::Weights;
 use da_parity::{assert_parity, dumps_path, Dumps};
 use std::path::Path;
+use vestra_engine::{dpt_head_debug, ModelConfig, UvEmbedCache, WinogradFilterCache};
 
 /// Real DA3-BASE model, provided via `../scripts/download_model.py` — same
 /// convention as `tests/backbone_parity.rs`/`tests/pos_embed_parity.rs`.
@@ -19,7 +19,7 @@ fn model() -> Option<GgufFile> {
 /// verbatim (no transpose needed — unlike `vit_block`'s linear weights,
 /// `dpt_head`'s conv weights are consumed in the same `[out_c, in_c, kh,
 /// kw]`/`[in_c, out_c, kh, kw]` OIHW/IOHW layout the GGUF converter writes
-/// them in, per `da_kernels::conv::conv2d`/`conv_transpose2d`'s doc
+/// them in, per `vestra_kernels::conv::conv2d`/`conv_transpose2d`'s doc
 /// comments). This is a test-local, minimal stand-in for Task 20's real
 /// weight-loading, mirroring `backbone_parity.rs::load_weights`'s pattern.
 fn load_head_weights(g: &GgufFile) -> Weights {
@@ -83,7 +83,9 @@ fn dpt_head_matches_reference_stages_fused_and_depth() {
         .collect();
 
     let mut cache = UvEmbedCache::new();
-    let (depth_out, debug) = dpt_head_debug(&feats, h, w, &cfg, &weights, &mut cache);
+    let mut wino_cache = WinogradFilterCache::new();
+    let (depth_out, debug) =
+        dpt_head_debug(&feats, h, w, &cfg, &weights, &mut cache, &mut wino_cache);
 
     for s in 0..4 {
         let name = format!("head_stage{s}");

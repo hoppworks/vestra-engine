@@ -1,6 +1,6 @@
-use da_engine::ModelConfig;
 use da_gguf::GgufFile;
 use std::path::{Path, PathBuf};
+use vestra_engine::ModelConfig;
 
 fn model() -> Option<GgufFile> {
     // The benchmark host supplies the exact pinned model through

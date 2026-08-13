@@ -109,6 +109,24 @@ pub enum EngineError {
     /// empty `out_layers` (malformed GGUF metadata) can't produce one.
     #[error("model config has empty out_layers; cannot select a camera-pose token")]
     EmptyOutLayers,
+    #[error("multi-view inference needs at least one input view")]
+    EmptyViewSet,
+    #[error("view {index} has an invalid RGB buffer: expected {expected} bytes, got {actual}")]
+    InvalidImageBuffer {
+        index: usize,
+        expected: usize,
+        actual: usize,
+    },
+    #[error(
+        "preprocessed view {index} has shape {actual_h}x{actual_w}; expected {expected_h}x{expected_w}"
+    )]
+    InconsistentViewShape {
+        index: usize,
+        expected_h: usize,
+        expected_w: usize,
+        actual_h: usize,
+        actual_w: usize,
+    },
 }
 
 /// Model hyperparameters and preprocessing config read from `depthanything3.*` GGUF metadata.

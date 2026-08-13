@@ -6,18 +6,18 @@ use crate::Plan;
 /// A single operation in the static op graph. Every op reads zero or more
 /// `TensorId`s and either writes a fresh `out: TensorId` (`Gemm`,
 /// `Attention`, `Conv2d`) or mutates its `x`/input tensor in place (`AddBias`,
-/// `Gelu`, `LayerNorm` — matching the in-place `da_kernels` functions they
+/// `Gelu`, `LayerNorm` — matching the in-place `vestra_kernels` functions they
 /// wrap).
 ///
 /// Only the variants exercised by this task's own test (`Gemm`, `AddBias`,
 /// `Gelu`) are required to work end-to-end right now. `LayerNorm`,
 /// `Attention` and `Conv2d` exist with sensible signatures (mirroring the
-/// `da_kernels` functions they'll dispatch to) so `CpuBackend::execute` can
+/// `vestra_kernels` functions they'll dispatch to) so `CpuBackend::execute` can
 /// already handle them, but they're only exercised by later milestones'
 /// parity tests.
 /// Precomputed 2D-RoPE inputs for [`Op::Attention`]: `pos_yx` is a
 /// `TensorId` of `n*2` f32-encoded `(y, x)` integer grid positions (row-major
-/// per token, matching `da_kernels::rope2d`'s `pos_yx` argument once cast
+/// per token, matching `vestra_kernels::rope2d`'s `pos_yx` argument once cast
 /// back to `i64`), and `freq` is the rotation base.
 #[derive(Debug, Clone, Copy)]
 pub struct RopeParams {
@@ -57,7 +57,7 @@ pub enum Op {
     },
     /// In-place per-column scale (LayerScale / DINOv2 `ls1`/`ls2`):
     /// `x[r,c] *= gamma[c]`, mirroring `AddBias`'s shape convention.
-    /// Wraps `da_kernels::scalar::layerscale`.
+    /// Wraps `vestra_kernels::scalar::layerscale`.
     LayerScale {
         x: TensorId,
         gamma: TensorId,
@@ -68,7 +68,7 @@ pub enum Op {
     /// ViT-block traps that live *inside* attention rather than around it:
     /// per-head QK-LayerNorm and 2D-RoPE. `q`,`k`,`v` and `out` are
     /// `[heads, n, head_dim]` row-major, matching
-    /// `da_kernels::attention::attention` — `q`/`k` are the *raw*
+    /// `vestra_kernels::attention::attention` — `q`/`k` are the *raw*
     /// (pre-norm, pre-RoPE) projections; `CpuBackend::execute` mutates them
     /// in place (qk-norm, then RoPE, both optional) before running the
     /// softmax(QK^T/sqrt(d))V core into `out`.
@@ -88,7 +88,7 @@ pub enum Op {
     /// grid positions (as a `TensorId` of `n*2` f32-encoded values — the
     /// arena only stores `f32`; values are exact for any realistic token
     /// count) plus the rotation base `freq`, applied via
-    /// `da_kernels::rope2d` after qk-norm. Only present when the calling
+    /// `vestra_kernels::rope2d` after qk-norm. Only present when the calling
     /// layer index is `>= cfg.rope_start`.
     Attention {
         q: TensorId,
@@ -104,7 +104,7 @@ pub enum Op {
         out: TensorId,
     },
     /// Standard NCHW (batch=1) Conv2d via im2col+GEMM, matching
-    /// `da_kernels::conv::conv2d`.
+    /// `vestra_kernels::conv::conv2d`.
     Conv2d {
         input: TensorId,
         weight: TensorId,

@@ -1,7 +1,7 @@
-use da_graph::{CpuBackend, Graph, RopeParams, Weights};
+use vestra_graph::{CpuBackend, Graph, RopeParams, Weights};
 
 /// `Op::LayerScale` (Task 17's additive graph-op) must match
-/// `da_kernels::scalar::layerscale` called directly on the same data.
+/// `vestra_kernels::scalar::layerscale` called directly on the same data.
 #[test]
 fn layer_scale_op_matches_manual_scalar_call() {
     let rows = 2usize;
@@ -25,13 +25,13 @@ fn layer_scale_op_matches_manual_scalar_call() {
     let graph_y = &out[0];
 
     let mut manual = x.clone();
-    da_kernels::scalar::layerscale(&mut manual, rows, cols, &gamma);
+    vestra_kernels::scalar::layerscale(&mut manual, rows, cols, &gamma);
 
     assert_eq!(graph_y, &manual);
 }
 
 /// With `qnorm = None, knorm = None, rope = None`, `Op::Attention` must
-/// degrade to exactly `da_kernels::attention::attention` on the same q/k/v —
+/// degrade to exactly `vestra_kernels::attention::attention` on the same q/k/v —
 /// i.e. the Task 17 revision to the op is purely additive for callers that
 /// don't opt into the new fields (this task's own "plain attention still
 /// works" regression coverage, dump-independent).
@@ -62,7 +62,7 @@ fn attention_op_without_qknorm_or_rope_matches_plain_attention() {
     let graph_out = &out[0];
 
     let mut manual = vec![0f32; len];
-    da_kernels::attention(&q, &k, &v, heads, n, head_dim, &mut manual);
+    vestra_kernels::attention(&q, &k, &v, heads, n, head_dim, &mut manual);
 
     assert_eq!(graph_out.len(), manual.len());
     let max_diff = graph_out
@@ -197,7 +197,7 @@ fn attention_op_qk_norm_uses_qk_norm_eps_not_ln_eps() {
 
 /// Sanity check that `RopeParams`/the `rope` field at least wires through
 /// and changes the output relative to no-RoPE (full numeric parity against
-/// the C++ reference is unverified — see `da_kernels::rope`'s module doc —
+/// the C++ reference is unverified — see `vestra_kernels::rope`'s module doc —
 /// this only proves the graph plumbing actually applies it).
 #[test]
 fn attention_op_rope_changes_output_relative_to_no_rope() {
@@ -275,10 +275,10 @@ fn manual_qk_norm_attention(
 ) -> Vec<f32> {
     let mut qc = q.to_vec();
     let mut kc = k.to_vec();
-    da_kernels::scalar::layernorm(&mut qc, heads * n, head_dim, qn_g, qn_b, eps);
-    da_kernels::scalar::layernorm(&mut kc, heads * n, head_dim, kn_g, kn_b, eps);
+    vestra_kernels::scalar::layernorm(&mut qc, heads * n, head_dim, qn_g, qn_b, eps);
+    vestra_kernels::scalar::layernorm(&mut kc, heads * n, head_dim, kn_g, kn_b, eps);
     let mut out = vec![0f32; heads * n * head_dim];
-    da_kernels::attention(&qc, &kc, v, heads, n, head_dim, &mut out);
+    vestra_kernels::attention(&qc, &kc, v, heads, n, head_dim, &mut out);
     out
 }
 

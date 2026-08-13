@@ -1,15 +1,15 @@
 [package]
-name = "da-engine"
+name = "vestra-engine"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-da-gguf = { path = "../da-gguf" }
-da-kernels = { path = "../da-kernels" }
-da-graph = { path = "../da-graph" }
+da-gguf = { package = "vestra-gguf", path = "../da-gguf" }
+vestra-kernels.workspace = true
+da-graph = { package = "vestra-graph", path = "../da-graph" }
 thiserror.workspace = true
 rayon.workspace = true
 
 [dev-dependencies]
-da-parity = { path = "../../da-parity" }
+da-parity = { package = "vestra-parity", path = "../../da-parity" }
