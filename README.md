@@ -68,4 +68,11 @@ the benchmark bundle rather than hidden in this README.
 - `vestra-kernels`: qualified CPU/CUDA kernels
 - `vestra`: video reconstruction, scene format, local service, CLI, and studio
 
-See [docs/PROVENANCE.md](docs/PROVENANCE.md) for the extraction record.
+## Development dependency
+
+The checked-in Cargo configuration uses a sibling `vestra-kernels` checkout as
+a development patch while the package is prepared for publication. This is not
+a source copy: it is the sole kernel implementation. See the
+[repository split migration](docs/REPOSITORY_SPLIT.md) and
+[ADR-001](docs/ADR-001-engine-kernel-repository-split.md) for the boundary and
+release requirement.
