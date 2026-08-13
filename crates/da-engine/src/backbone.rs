@@ -46,7 +46,9 @@
 //! defaults — `alt_start: -1`, `cat_token: true` — were cross-referenced
 //! against `include/da_gguf_keys.h` and `../src/model_loader.cpp`, not
 //! observed on a real GGUF file directly).
-use crate::vit_block::{vit_block, vit_block_with_views};
+#[cfg(test)]
+use crate::vit_block::vit_block;
+use crate::vit_block::{vit_block_with_residual, vit_block_with_views, ResidualAddExecutor};
 use crate::ModelConfig;
 use da_graph::{Backend, Weights};
 use std::io::Write;
@@ -212,6 +214,7 @@ pub struct Backbone<'a> {
     pub cfg: &'a ModelConfig,
     pub weights: &'a Weights,
     pub backend: &'a dyn Backend,
+    residual_executor: Option<&'a dyn ResidualAddExecutor>,
 }
 
 impl<'a> Backbone<'a> {
@@ -220,6 +223,22 @@ impl<'a> Backbone<'a> {
             cfg,
             weights,
             backend,
+            residual_executor: None,
+        }
+    }
+
+    #[cfg(feature = "cuda-residual-oracle")]
+    pub(crate) fn new_with_residual(
+        cfg: &'a ModelConfig,
+        weights: &'a Weights,
+        backend: &'a dyn Backend,
+        residual_executor: &'a dyn ResidualAddExecutor,
+    ) -> Self {
+        Self {
+            cfg,
+            weights,
+            backend,
+            residual_executor: Some(residual_executor),
         }
     }
 
@@ -253,7 +272,7 @@ impl<'a> Backbone<'a> {
         for view in &mut captured_views {
             assert_eq!(view.len(), n * embed, "all views must share a token shape");
             for layer_idx in 0..upto {
-                vit_block(
+                vit_block_with_residual(
                     view,
                     n,
                     gh,
@@ -263,6 +282,7 @@ impl<'a> Backbone<'a> {
                     layer_idx,
                     self.weights,
                     self.backend,
+                    self.residual_executor,
                 );
             }
         }
@@ -337,7 +357,7 @@ impl<'a> Backbone<'a> {
             let global =
                 cfg.alt_start >= 0 && (layer_idx as i32) >= cfg.alt_start && layer_idx % 2 == 1;
 
-            vit_block(
+            vit_block_with_residual(
                 tokens,
                 n,
                 gh,
@@ -347,6 +367,7 @@ impl<'a> Backbone<'a> {
                 layer_idx,
                 self.weights,
                 self.backend,
+                self.residual_executor,
             );
 
             if phase_profile {
@@ -495,6 +516,7 @@ impl<'a> Backbone<'a> {
                     layer_idx,
                     self.weights,
                     self.backend,
+                    self.residual_executor,
                 );
                 for (view_index, view) in views.iter_mut().enumerate() {
                     let start = view_index * n * embed;
@@ -502,7 +524,7 @@ impl<'a> Backbone<'a> {
                 }
             } else {
                 for view in views.iter_mut() {
-                    vit_block(
+                    vit_block_with_residual(
                         view,
                         n,
                         gh,
@@ -512,6 +534,7 @@ impl<'a> Backbone<'a> {
                         layer_idx,
                         self.weights,
                         self.backend,
+                        self.residual_executor,
                     );
                 }
             }

@@ -223,6 +223,8 @@ pub struct Engine {
     uv_cache: UvEmbedCache,
     wino_cache: WinogradFilterCache,
     head_workspace: HeadWorkspace,
+    #[cfg(feature = "cuda-residual-oracle")]
+    cuda_residual: Option<vestra_kernels::cuda::CudaRuntime>,
 }
 
 impl Engine {
@@ -249,7 +251,36 @@ impl Engine {
             uv_cache: UvEmbedCache::new(),
             wino_cache: WinogradFilterCache::new(),
             head_workspace: HeadWorkspace::new(),
+            #[cfg(feature = "cuda-residual-oracle")]
+            cuda_residual: None,
         })
+    }
+
+    /// Enables the native CUDA residual parity slice on `device`. The full
+    /// DA3 graph is not yet device-resident: each transformer residual is
+    /// uploaded, added by CUDA, and downloaded, so this mode establishes
+    /// numerical integration rather than a GPU performance claim.
+    #[cfg(feature = "cuda-residual-oracle")]
+    pub fn enable_cuda_residual_oracle(
+        &mut self,
+        device: usize,
+    ) -> Result<(), vestra_kernels::cuda::CudaError> {
+        self.cuda_residual = Some(vestra_kernels::cuda::CudaRuntime::new(device)?);
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda-residual-oracle")]
+    #[must_use]
+    pub fn cuda_residual_oracle_enabled(&self) -> bool {
+        self.cuda_residual.is_some()
+    }
+
+    fn backbone(&self) -> Backbone<'_> {
+        #[cfg(feature = "cuda-residual-oracle")]
+        if let Some(runtime) = self.cuda_residual.as_ref() {
+            return Backbone::new_with_residual(&self.cfg, &self.weights, &self.backend, runtime);
+        }
+        Backbone::new(&self.cfg, &self.weights, &self.backend)
     }
 
     fn forward_depth(
@@ -276,7 +307,7 @@ impl Engine {
         );
         let tokens_prepared = std::time::Instant::now();
 
-        let backbone = Backbone::new(&self.cfg, &self.weights, &self.backend);
+        let backbone = self.backbone();
         let bb_out = backbone.forward(&mut tokens, gh, gw, &self.cfg.out_layers);
         let backbone_done = std::time::Instant::now();
         let depth_out = if std::env::var_os("DA3_DISABLE_HEAD_WORKSPACE").is_some() {
@@ -343,7 +374,7 @@ impl Engine {
     ) -> Result<MultiViewInferOut, EngineError> {
         let mut prepared = self.prepare_multi_view(inputs)?;
         let reference_view_index = if prepared.token_views.len() >= 3 && self.cfg.alt_start >= 0 {
-            let backbone = Backbone::new(&self.cfg, &self.weights, &self.backend);
+            let backbone = self.backbone();
             let cls = backbone.capture_local_cls(
                 &prepared.token_views,
                 prepared.gh,
@@ -459,7 +490,7 @@ impl Engine {
         let h = prepared.h;
         let w = prepared.w;
         let backbone_out = {
-            let backbone = Backbone::new(&self.cfg, &self.weights, &self.backend);
+            let backbone = self.backbone();
             backbone.forward_multi_view_ordered(
                 &mut prepared.token_views,
                 prepared.gh,

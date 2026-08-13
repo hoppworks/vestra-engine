@@ -4,6 +4,13 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# A parity-only vertical slice: transformer residual additions execute on the
+# native Vestra CUDA runtime while the remaining DA3 operators stay CPU-side.
+# This is deliberately not enabled by the product CLI yet.
+cuda-residual-oracle = ["vestra-kernels/cuda"]
+
 [dependencies]
 da-gguf = { package = "vestra-gguf", path = "../da-gguf" }
 vestra-kernels.workspace = true
@@ -13,3 +20,4 @@ rayon.workspace = true
 
 [dev-dependencies]
 da-parity = { package = "vestra-parity", path = "../../da-parity" }
+image.workspace = true

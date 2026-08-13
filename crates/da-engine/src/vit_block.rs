@@ -60,6 +60,44 @@ use crate::ModelConfig;
 use da_graph::{Backend, Weights};
 use vestra_kernels::gemm::{Da3ProjectionGemm, Gemm};
 
+/// Execution seam for the two transformer residual additions. The normal
+/// production path supplies `None` and keeps the optimized CPU add. A CUDA
+/// implementation is intentionally an opt-in parity slice until all adjacent
+/// operators can remain device-resident.
+pub trait ResidualAddExecutor: Send + Sync {
+    fn add_in_place(&self, destination: &mut [f32], source: &[f32]);
+}
+
+#[cfg(feature = "cuda-residual-oracle")]
+impl ResidualAddExecutor for vestra_kernels::cuda::CudaRuntime {
+    fn add_in_place(&self, destination: &mut [f32], source: &[f32]) {
+        let mut destination_device = self
+            .upload_f32(destination)
+            .expect("CUDA residual destination upload must succeed");
+        let source_device = self
+            .upload_f32(source)
+            .expect("CUDA residual source upload must succeed");
+        self.add_f32_in_place(&mut destination_device, &source_device)
+            .expect("CUDA residual kernel must succeed");
+        let result = self
+            .download_f32(&destination_device)
+            .expect("CUDA residual result download must succeed");
+        destination.copy_from_slice(&result);
+    }
+}
+
+fn add_residual(
+    destination: &mut [f32],
+    source: &[f32],
+    executor: Option<&dyn ResidualAddExecutor>,
+) {
+    if let Some(executor) = executor {
+        executor.add_in_place(destination, source);
+    } else {
+        vestra_kernels::Kernels::detect().add(destination, source);
+    }
+}
+
 /// The per-head QK-LayerNorm epsilon (trap #1 from the Task 17 brief):
 /// torch's *default* `nn.LayerNorm` eps, **not** the block's `ln_eps`. See
 /// `da_graph::graph::Op::Attention`'s doc comment and
@@ -399,6 +437,7 @@ pub(crate) fn vit_block_with_views(
     layer_idx: usize,
     weights: &Weights,
     _backend: &dyn Backend,
+    residual_executor: Option<&dyn ResidualAddExecutor>,
 ) {
     let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
     assert_eq!(
@@ -436,7 +475,7 @@ pub(crate) fn vit_block_with_views(
     let ln1_elapsed = ln1_started.elapsed();
     let attention_started = std::time::Instant::now();
     let attn_out = run_attention(&ln1, n, gh, gw, global, view_count, cfg, layer_idx, weights);
-    vestra_kernels::Kernels::detect().add(tokens, &attn_out);
+    add_residual(tokens, &attn_out, residual_executor);
     let attention_elapsed = attention_started.elapsed();
 
     // --- MLP sub-block --- (same "tokens still holds the residual" trick)
@@ -476,7 +515,7 @@ pub(crate) fn vit_block_with_views(
         Some(&wname(layer_idx, "ls2")),
         weights,
     );
-    vestra_kernels::Kernels::detect().add(tokens, &m);
+    add_residual(tokens, &m, residual_executor);
     if phase_profile {
         eprintln!(
             "phase: block[{layer_idx}] ln1={:.3}ms attention={:.3}ms ln2={:.3}ms fc1_gelu={:.3}ms fc2_residual={:.3}ms",
@@ -494,6 +533,33 @@ pub(crate) fn vit_block_with_views(
 /// Multi-view global attention uses the internal [`vit_block_with_views`]
 /// entry point so RoPE special-token boundaries repeat for every view.
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn vit_block_with_residual(
+    tokens: &mut [f32],
+    n: usize,
+    gh: usize,
+    gw: usize,
+    global: bool,
+    cfg: &ModelConfig,
+    layer_idx: usize,
+    weights: &Weights,
+    backend: &dyn Backend,
+    residual_executor: Option<&dyn ResidualAddExecutor>,
+) {
+    vit_block_with_views(
+        tokens,
+        n,
+        gh,
+        gw,
+        global,
+        1,
+        cfg,
+        layer_idx,
+        weights,
+        backend,
+        residual_executor,
+    );
+}
+
 pub fn vit_block(
     tokens: &mut [f32],
     n: usize,
@@ -505,8 +571,8 @@ pub fn vit_block(
     weights: &Weights,
     backend: &dyn Backend,
 ) {
-    vit_block_with_views(
-        tokens, n, gh, gw, global, 1, cfg, layer_idx, weights, backend,
+    vit_block_with_residual(
+        tokens, n, gh, gw, global, cfg, layer_idx, weights, backend, None,
     );
 }
 
