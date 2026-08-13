@@ -49,6 +49,8 @@
 use crate::vit_block::{vit_block, vit_block_with_views};
 use crate::ModelConfig;
 use da_graph::{Backend, Weights};
+use std::io::Write;
+use std::path::PathBuf;
 
 /// `vit.norm` LayerNorm weight/bias tensor names — the final normalization
 /// applied to `x` (never to `local_x`) before it's concatenated into `feat`.
@@ -62,6 +64,22 @@ pub const VIT_NORM_BIAS: &str = "vit.norm.bias";
 /// ne1=2` — this single-view `forward()` path only ever reads slot 0, i.e.
 /// the first `embed_dim` floats of the tensor's data).
 pub const CAMERA_TOKEN_WEIGHT: &str = "vit.camera_token";
+
+fn trace_multi_view_block(trace_dir: Option<&PathBuf>, layer: usize, views: &[Vec<f32>]) {
+    let Some(trace_dir) = trace_dir else {
+        return;
+    };
+    let path = trace_dir.join(format!("rust-block-{layer}.f32"));
+    let mut file = std::fs::File::create(&path).unwrap_or_else(|error| {
+        panic!("cannot create multi-view trace {}: {error}", path.display())
+    });
+    for value in views.iter().flatten() {
+        file.write_all(&value.to_le_bytes())
+            .unwrap_or_else(|error| {
+                panic!("cannot write multi-view trace {}: {error}", path.display())
+            });
+    }
+}
 
 /// Per-out-layer captured outputs of `Backbone::forward`: `feat` (per-patch
 /// features, token-0 stripped) and `cam_token` (the token-0/CLS-derived
@@ -423,6 +441,15 @@ impl<'a> Backbone<'a> {
         let mut local_x = views.to_vec();
         let mut feats = vec![vec![None; view_count]; out_layers.len()];
         let mut cam_tokens = vec![vec![None; view_count]; out_layers.len()];
+        let trace_dir = std::env::var_os("VESTRA_TRACE_DIR").map(PathBuf::from);
+        if let Some(trace_dir) = &trace_dir {
+            std::fs::create_dir_all(trace_dir).unwrap_or_else(|error| {
+                panic!(
+                    "cannot create multi-view trace directory {}: {error}",
+                    trace_dir.display()
+                )
+            });
+        }
 
         for layer_idx in 0..cfg.depth as usize {
             if cfg.alt_start >= 0 && layer_idx == cfg.alt_start as usize {
@@ -507,6 +534,7 @@ impl<'a> Backbone<'a> {
             if !global {
                 local_x.clone_from_slice(views);
             }
+            trace_multi_view_block(trace_dir.as_ref(), layer_idx, views);
         }
 
         let feats = feats

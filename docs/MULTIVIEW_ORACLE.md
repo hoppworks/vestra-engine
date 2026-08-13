@@ -39,3 +39,17 @@ separately because a raw concatenated "pose MAE" mixes unitless rotation and
 translation with focal lengths in pixels, which is not physically meaningful.
 The script does not suppress outliers or average failures away: one failed
 view makes the run fail.
+
+## Diagnosing a failed window
+
+Set `VESTRA_TRACE_DIR` for a temporary instrumented C++ oracle and the Vestra
+Engine invocation. Both write `block-0` through `block-11` tensors in
+`[view][token][channel]` F32 order. Locate the first divergent block with:
+
+```bash
+python3 scripts/compare_block_trace.py \
+  --cpp-dir /tmp/cpp-trace --rust-dir /tmp/rust-trace --blocks 12 \
+  --output block-trace.json
+```
+
+Do not tune a later block until the earliest divergent block is understood.
