@@ -50,7 +50,7 @@
 use crate::vit_block::vit_block;
 use crate::vit_block::{
     vit_block_with_residual, vit_block_with_views, AttentionExecutor, MlpExecutor,
-    ResidualAddExecutor,
+    ResidualAddExecutor, TransformerTailExecutor,
 };
 use crate::ModelConfig;
 use da_graph::{Backend, Weights};
@@ -220,6 +220,7 @@ pub struct Backbone<'a> {
     residual_executor: Option<&'a dyn ResidualAddExecutor>,
     mlp_executor: Option<&'a dyn MlpExecutor>,
     attention_executor: Option<&'a dyn AttentionExecutor>,
+    transformer_tail_executor: Option<&'a dyn TransformerTailExecutor>,
 }
 
 impl<'a> Backbone<'a> {
@@ -231,6 +232,7 @@ impl<'a> Backbone<'a> {
             residual_executor: None,
             mlp_executor: None,
             attention_executor: None,
+            transformer_tail_executor: None,
         }
     }
 
@@ -248,6 +250,7 @@ impl<'a> Backbone<'a> {
             residual_executor: Some(residual_executor),
             mlp_executor: None,
             attention_executor: None,
+            transformer_tail_executor: None,
         }
     }
 
@@ -265,6 +268,7 @@ impl<'a> Backbone<'a> {
             residual_executor: None,
             mlp_executor: Some(mlp_executor),
             attention_executor: None,
+            transformer_tail_executor: None,
         }
     }
 
@@ -282,6 +286,25 @@ impl<'a> Backbone<'a> {
             residual_executor: None,
             mlp_executor: None,
             attention_executor: Some(attention_executor),
+            transformer_tail_executor: None,
+        }
+    }
+
+    #[cfg(feature = "cuda-residual-oracle")]
+    pub(crate) fn new_with_transformer_tail(
+        cfg: &'a ModelConfig,
+        weights: &'a Weights,
+        backend: &'a dyn Backend,
+        transformer_tail_executor: &'a dyn TransformerTailExecutor,
+    ) -> Self {
+        Self {
+            cfg,
+            weights,
+            backend,
+            residual_executor: None,
+            mlp_executor: None,
+            attention_executor: None,
+            transformer_tail_executor: Some(transformer_tail_executor),
         }
     }
 
@@ -328,6 +351,7 @@ impl<'a> Backbone<'a> {
                     self.residual_executor,
                     self.mlp_executor,
                     self.attention_executor,
+                    self.transformer_tail_executor,
                 );
             }
         }
@@ -415,6 +439,7 @@ impl<'a> Backbone<'a> {
                 self.residual_executor,
                 self.mlp_executor,
                 self.attention_executor,
+                self.transformer_tail_executor,
             );
 
             if phase_profile {
@@ -566,6 +591,7 @@ impl<'a> Backbone<'a> {
                     self.residual_executor,
                     self.mlp_executor,
                     self.attention_executor,
+                    self.transformer_tail_executor,
                 );
                 for (view_index, view) in views.iter_mut().enumerate() {
                     let start = view_index * n * embed;
@@ -586,6 +612,7 @@ impl<'a> Backbone<'a> {
                         self.residual_executor,
                         self.mlp_executor,
                         self.attention_executor,
+                        self.transformer_tail_executor,
                     );
                 }
             }

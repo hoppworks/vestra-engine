@@ -90,6 +90,25 @@ pub trait AttentionExecutor {
     ) -> Option<Vec<f32>>;
 }
 
+/// A device-resident transformer tail beginning after CPU-order LN1. The
+/// executor owns attention, both residual additions, LN2, and the complete
+/// MLP branch. `None` means the block is outside its validated subset.
+pub trait TransformerTailExecutor {
+    #[allow(clippy::too_many_arguments)]
+    fn run_tail(
+        &self,
+        layer_idx: usize,
+        tokens: &[f32],
+        ln1: &[f32],
+        rows: usize,
+        gh: usize,
+        gw: usize,
+        global: bool,
+        view_count: usize,
+        cfg: &ModelConfig,
+    ) -> Option<Vec<f32>>;
+}
+
 /// Cached device MLP parameters for every classic DA3-BASE transformer
 /// block. It is a parity-only vertical slice until layer normalization,
 /// attention, and both residual branches can also remain device-resident.
@@ -108,6 +127,14 @@ pub struct CudaMlpExecutor {
 pub struct CudaAttentionExecutor {
     runtime: vestra_kernels::cuda::CudaRuntime,
     layers: Vec<CudaAttentionLayer>,
+}
+
+/// Combines the qualified CUDA attention and MLP branches so no attention
+/// result, residual, or FC1 activation crosses PCIe between them.
+#[cfg(feature = "cuda-residual-oracle")]
+pub struct CudaTransformerTailExecutor {
+    attention: CudaAttentionExecutor,
+    mlp: CudaMlpExecutor,
 }
 
 #[cfg(feature = "cuda-residual-oracle")]
@@ -314,6 +341,110 @@ impl AttentionExecutor for CudaAttentionExecutor {
             .ok()?;
         let output = layer.projection.run(&token_major, rows).ok()?;
         self.runtime.download_f32(&output).ok()
+    }
+}
+
+#[cfg(feature = "cuda-residual-oracle")]
+impl CudaTransformerTailExecutor {
+    pub fn new(
+        runtime: vestra_kernels::cuda::CudaRuntime,
+        cfg: &ModelConfig,
+        weights: &Weights,
+    ) -> Result<Self, vestra_kernels::cuda::CudaError> {
+        Ok(Self {
+            attention: CudaAttentionExecutor::new(runtime.clone(), cfg, weights)?,
+            mlp: CudaMlpExecutor::new(runtime, cfg, weights)?,
+        })
+    }
+}
+
+#[cfg(feature = "cuda-residual-oracle")]
+impl TransformerTailExecutor for CudaTransformerTailExecutor {
+    fn run_tail(
+        &self,
+        layer_idx: usize,
+        tokens: &[f32],
+        ln1: &[f32],
+        rows: usize,
+        gh: usize,
+        gw: usize,
+        global: bool,
+        view_count: usize,
+        cfg: &ModelConfig,
+    ) -> Option<Vec<f32>> {
+        let heads = cfg.num_heads as usize;
+        let head_dim = cfg.head_dim as usize;
+        if heads != 12 || head_dim != 64 || tokens.len() != rows * 768 {
+            return None;
+        }
+        let layer = self.attention.layers.get(layer_idx)?;
+        let qk = layer.qk.as_ref()?;
+        let n_special = 1 + cfg.num_register as usize;
+        let tokens_per_view = n_special + gh * gw;
+        if rows != tokens_per_view * view_count {
+            return None;
+        }
+        let mut positions_yx = vec![0.0_f32; rows * 2];
+        for view in 0..view_count {
+            let base = view * tokens_per_view;
+            for local_t in n_special..tokens_per_view {
+                let token = base + local_t;
+                if global {
+                    positions_yx[2 * token] = 1.0;
+                    positions_yx[2 * token + 1] = 1.0;
+                } else {
+                    let patch = local_t - n_special;
+                    positions_yx[2 * token] = (patch / gw + 1) as f32;
+                    positions_yx[2 * token + 1] = (patch % gw + 1) as f32;
+                }
+            }
+        }
+        let runtime = &self.attention.runtime;
+        let ln1 = runtime.upload_f32(ln1).ok()?;
+        let qkv = layer.qkv.run(&ln1, rows).ok()?;
+        let (mut q, mut k, v) = runtime
+            .split_qkv_hnd_f32(&qkv, rows, heads, head_dim)
+            .ok()?;
+        let positions = runtime.upload_f32(&positions_yx).ok()?;
+        runtime
+            .qk_norm_rope_f32_da3_base(
+                &mut q,
+                &mut k,
+                &qk.q_gamma,
+                &qk.q_beta,
+                &qk.k_gamma,
+                &qk.k_beta,
+                &positions,
+                heads,
+                rows,
+                cfg.rope_freq,
+                QK_NORM_EPS,
+            )
+            .ok()?;
+        let hnd = runtime
+            .attention_online_f32(&q, &k, &v, heads, rows, head_dim)
+            .ok()?;
+        let token_major = runtime.hnd_to_token_f32(&hnd, rows, heads, head_dim).ok()?;
+        let attention = layer.projection.run(&token_major, rows).ok()?;
+        let mut residual = runtime.upload_f32(tokens).ok()?;
+        runtime.add_f32_in_place(&mut residual, &attention).ok()?;
+
+        let mlp_layer = self.mlp.layers.get(layer_idx)?;
+        let normalized = runtime
+            .layernorm_f32_cpu_order(
+                &residual,
+                &mlp_layer.norm2_gamma,
+                &mlp_layer.norm2_beta,
+                rows,
+                768,
+                self.mlp.ln_eps,
+            )
+            .ok()?;
+        let mut hidden = mlp_layer.fc1.run(&normalized, rows).ok()?;
+        runtime.gelu_f32_in_place(&mut hidden).ok()?;
+        let mlp = mlp_layer.fc2.run(&hidden, rows).ok()?;
+        runtime.add_f32_in_place(&mut residual, &mlp).ok()?;
+        runtime.download_f32(&residual).ok()
     }
 }
 
@@ -733,6 +864,7 @@ pub(crate) fn vit_block_with_views(
     residual_executor: Option<&dyn ResidualAddExecutor>,
     mlp_executor: Option<&dyn MlpExecutor>,
     attention_executor: Option<&dyn AttentionExecutor>,
+    transformer_tail_executor: Option<&dyn TransformerTailExecutor>,
 ) {
     let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
     assert_eq!(
@@ -768,6 +900,14 @@ pub(crate) fn vit_block_with_views(
         weights,
     );
     let ln1_elapsed = ln1_started.elapsed();
+    if let Some(executor) = transformer_tail_executor {
+        if let Some(result) =
+            executor.run_tail(layer_idx, tokens, &ln1, n, gh, gw, global, view_count, cfg)
+        {
+            tokens.copy_from_slice(&result);
+            return;
+        }
+    }
     let attention_started = std::time::Instant::now();
     let attn_out = run_attention(
         &ln1,
@@ -850,6 +990,7 @@ pub(crate) fn vit_block_with_residual(
     residual_executor: Option<&dyn ResidualAddExecutor>,
     mlp_executor: Option<&dyn MlpExecutor>,
     attention_executor: Option<&dyn AttentionExecutor>,
+    transformer_tail_executor: Option<&dyn TransformerTailExecutor>,
 ) {
     vit_block_with_views(
         tokens,
@@ -865,6 +1006,7 @@ pub(crate) fn vit_block_with_residual(
         residual_executor,
         mlp_executor,
         attention_executor,
+        transformer_tail_executor,
     );
 }
 
@@ -880,7 +1022,7 @@ pub fn vit_block(
     backend: &dyn Backend,
 ) {
     vit_block_with_residual(
-        tokens, n, gh, gw, global, cfg, layer_idx, weights, backend, None, None, None,
+        tokens, n, gh, gw, global, cfg, layer_idx, weights, backend, None, None, None, None,
     );
 }
 

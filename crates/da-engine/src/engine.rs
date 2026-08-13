@@ -51,7 +51,7 @@ use crate::pose::cam_pose;
 use crate::preprocess::preprocess;
 use crate::uv_embed::UvEmbedCache;
 #[cfg(feature = "cuda-residual-oracle")]
-use crate::vit_block::{CudaAttentionExecutor, CudaMlpExecutor};
+use crate::vit_block::{CudaAttentionExecutor, CudaMlpExecutor, CudaTransformerTailExecutor};
 use crate::{dpt_head, ModelConfig};
 
 /// Quantization preference for [`weights_from_gguf`] / [`Engine::load`].
@@ -231,6 +231,8 @@ pub struct Engine {
     cuda_mlp: Option<CudaMlpExecutor>,
     #[cfg(feature = "cuda-residual-oracle")]
     cuda_attention: Option<CudaAttentionExecutor>,
+    #[cfg(feature = "cuda-residual-oracle")]
+    cuda_transformer_tail: Option<CudaTransformerTailExecutor>,
 }
 
 impl Engine {
@@ -263,6 +265,8 @@ impl Engine {
             cuda_mlp: None,
             #[cfg(feature = "cuda-residual-oracle")]
             cuda_attention: None,
+            #[cfg(feature = "cuda-residual-oracle")]
+            cuda_transformer_tail: None,
         })
     }
 
@@ -329,6 +333,28 @@ impl Engine {
         self.cuda_attention.is_some()
     }
 
+    /// Enables the connected CUDA transformer tail parity slice. Qualified
+    /// blocks keep attention, residuals, LN2 and MLP device-resident.
+    #[cfg(feature = "cuda-residual-oracle")]
+    pub fn enable_cuda_transformer_tail_oracle(
+        &mut self,
+        device: usize,
+    ) -> Result<(), vestra_kernels::cuda::CudaError> {
+        let runtime = vestra_kernels::cuda::CudaRuntime::new(device)?;
+        self.cuda_transformer_tail = Some(CudaTransformerTailExecutor::new(
+            runtime,
+            &self.cfg,
+            &self.weights,
+        )?);
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda-residual-oracle")]
+    #[must_use]
+    pub fn cuda_transformer_tail_oracle_enabled(&self) -> bool {
+        self.cuda_transformer_tail.is_some()
+    }
+
     fn backbone(&self) -> Backbone<'_> {
         #[cfg(feature = "cuda-residual-oracle")]
         if let Some(executor) = self.cuda_mlp.as_ref() {
@@ -337,6 +363,15 @@ impl Engine {
         #[cfg(feature = "cuda-residual-oracle")]
         if let Some(executor) = self.cuda_attention.as_ref() {
             return Backbone::new_with_attention(&self.cfg, &self.weights, &self.backend, executor);
+        }
+        #[cfg(feature = "cuda-residual-oracle")]
+        if let Some(executor) = self.cuda_transformer_tail.as_ref() {
+            return Backbone::new_with_transformer_tail(
+                &self.cfg,
+                &self.weights,
+                &self.backend,
+                executor,
+            );
         }
         #[cfg(feature = "cuda-residual-oracle")]
         if let Some(runtime) = self.cuda_residual.as_ref() {
