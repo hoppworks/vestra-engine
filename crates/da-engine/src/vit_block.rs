@@ -601,12 +601,11 @@ pub(crate) fn vit_block_with_views(
     add_residual(tokens, &m, residual_executor);
     if phase_profile {
         eprintln!(
-            "phase: block[{layer_idx}] ln1={:.3}ms attention={:.3}ms ln2={:.3}ms fc1_gelu={:.3}ms fc2_residual={:.3}ms",
+            "phase: block[{layer_idx}] ln1={:.3}ms attention={:.3}ms ln2={:.3}ms mlp={:.3}ms fc2_residual=0.000ms",
             ln1_elapsed.as_secs_f64() * 1e3,
             attention_elapsed.as_secs_f64() * 1e3,
             ln2_elapsed.as_secs_f64() * 1e3,
             fc1_started.elapsed().as_secs_f64() * 1e3,
-            0.0,
         );
     }
 }
