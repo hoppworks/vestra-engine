@@ -49,7 +49,8 @@
 #[cfg(test)]
 use crate::vit_block::vit_block;
 use crate::vit_block::{
-    vit_block_with_residual, vit_block_with_views, MlpExecutor, ResidualAddExecutor,
+    vit_block_with_residual, vit_block_with_views, AttentionExecutor, MlpExecutor,
+    ResidualAddExecutor,
 };
 use crate::ModelConfig;
 use da_graph::{Backend, Weights};
@@ -218,6 +219,7 @@ pub struct Backbone<'a> {
     pub backend: &'a dyn Backend,
     residual_executor: Option<&'a dyn ResidualAddExecutor>,
     mlp_executor: Option<&'a dyn MlpExecutor>,
+    attention_executor: Option<&'a dyn AttentionExecutor>,
 }
 
 impl<'a> Backbone<'a> {
@@ -228,6 +230,7 @@ impl<'a> Backbone<'a> {
             backend,
             residual_executor: None,
             mlp_executor: None,
+            attention_executor: None,
         }
     }
 
@@ -244,6 +247,7 @@ impl<'a> Backbone<'a> {
             backend,
             residual_executor: Some(residual_executor),
             mlp_executor: None,
+            attention_executor: None,
         }
     }
 
@@ -260,6 +264,24 @@ impl<'a> Backbone<'a> {
             backend,
             residual_executor: None,
             mlp_executor: Some(mlp_executor),
+            attention_executor: None,
+        }
+    }
+
+    #[cfg(feature = "cuda-residual-oracle")]
+    pub(crate) fn new_with_attention(
+        cfg: &'a ModelConfig,
+        weights: &'a Weights,
+        backend: &'a dyn Backend,
+        attention_executor: &'a dyn AttentionExecutor,
+    ) -> Self {
+        Self {
+            cfg,
+            weights,
+            backend,
+            residual_executor: None,
+            mlp_executor: None,
+            attention_executor: Some(attention_executor),
         }
     }
 
@@ -305,6 +327,7 @@ impl<'a> Backbone<'a> {
                     self.backend,
                     self.residual_executor,
                     self.mlp_executor,
+                    self.attention_executor,
                 );
             }
         }
@@ -391,6 +414,7 @@ impl<'a> Backbone<'a> {
                 self.backend,
                 self.residual_executor,
                 self.mlp_executor,
+                self.attention_executor,
             );
 
             if phase_profile {
@@ -541,6 +565,7 @@ impl<'a> Backbone<'a> {
                     self.backend,
                     self.residual_executor,
                     self.mlp_executor,
+                    self.attention_executor,
                 );
                 for (view_index, view) in views.iter_mut().enumerate() {
                     let start = view_index * n * embed;
@@ -560,6 +585,7 @@ impl<'a> Backbone<'a> {
                         self.backend,
                         self.residual_executor,
                         self.mlp_executor,
+                        self.attention_executor,
                     );
                 }
             }

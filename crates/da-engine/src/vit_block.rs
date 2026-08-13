@@ -75,6 +75,21 @@ pub trait MlpExecutor {
     fn run_mlp(&self, layer_idx: usize, input: &[f32], rows: usize) -> Vec<f32>;
 }
 
+/// Execution seam for the complete QKV → Q/K normalization/RoPE → attention
+/// → output-projection branch. Implementations return `None` when the model
+/// shape or operator configuration is not their qualified CUDA subset.
+pub trait AttentionExecutor {
+    fn run_attention(
+        &self,
+        layer_idx: usize,
+        input: &[f32],
+        rows: usize,
+        heads: usize,
+        head_dim: usize,
+        positions_yx: Option<&[f32]>,
+    ) -> Option<Vec<f32>>;
+}
+
 /// Cached device MLP parameters for every classic DA3-BASE transformer
 /// block. It is a parity-only vertical slice until layer normalization,
 /// attention, and both residual branches can also remain device-resident.
@@ -83,6 +98,26 @@ pub struct CudaMlpExecutor {
     runtime: vestra_kernels::cuda::CudaRuntime,
     ln_eps: f32,
     layers: Vec<CudaMlpLayer>,
+}
+
+/// Cached device parameters for the DA3-BASE attention branch. This keeps
+/// QKV, Q/K preparation, online attention, unpack, and output projection on
+/// CUDA; only LN1 input and the projected residual branch cross the host
+/// boundary while the rest of the transformer remains CPU-owned.
+#[cfg(feature = "cuda-residual-oracle")]
+pub struct CudaAttentionExecutor {
+    runtime: vestra_kernels::cuda::CudaRuntime,
+    layers: Vec<CudaAttentionLayer>,
+}
+
+#[cfg(feature = "cuda-residual-oracle")]
+struct CudaAttentionLayer {
+    qkv: vestra_kernels::cuda::CudaLinearF32,
+    q_gamma: vestra_kernels::cuda::CudaTensorF32,
+    q_beta: vestra_kernels::cuda::CudaTensorF32,
+    k_gamma: vestra_kernels::cuda::CudaTensorF32,
+    k_beta: vestra_kernels::cuda::CudaTensorF32,
+    projection: vestra_kernels::cuda::CudaLinearF32,
 }
 
 #[cfg(feature = "cuda-residual-oracle")]
@@ -142,6 +177,133 @@ impl CudaMlpExecutor {
             ln_eps: cfg.ln_eps,
             layers,
         })
+    }
+}
+
+#[cfg(feature = "cuda-residual-oracle")]
+impl CudaAttentionExecutor {
+    pub fn new(
+        runtime: vestra_kernels::cuda::CudaRuntime,
+        cfg: &ModelConfig,
+        weights: &Weights,
+    ) -> Result<Self, vestra_kernels::cuda::CudaError> {
+        assert_eq!(
+            cfg.embed_dim, 768,
+            "CUDA attention supports DA3-BASE embed=768 only"
+        );
+        assert_eq!(
+            cfg.num_heads, 12,
+            "CUDA attention supports DA3-BASE heads=12 only"
+        );
+        assert_eq!(
+            cfg.head_dim, 64,
+            "CUDA attention supports DA3-BASE head_dim=64 only"
+        );
+        assert_eq!(
+            cfg.qknorm_start, 0,
+            "CUDA attention requires DA3-BASE Q/K norm from block zero"
+        );
+        assert_eq!(
+            cfg.rope_start, 0,
+            "CUDA attention requires DA3-BASE RoPE from block zero"
+        );
+        let embed = cfg.embed_dim as usize;
+        let mut layers = Vec::with_capacity(cfg.depth as usize);
+        for layer_idx in 0..cfg.depth as usize {
+            layers.push(CudaAttentionLayer {
+                qkv: runtime.prepare_linear_f32(
+                    embed,
+                    3 * embed,
+                    weights
+                        .get_f32(&wname(layer_idx, "attn_qkv.weight"))
+                        .unwrap(),
+                    weights.get_f32(&wname(layer_idx, "attn_qkv.bias")).unwrap(),
+                    None,
+                )?,
+                q_gamma: runtime.upload_f32(
+                    weights
+                        .get_f32(&wname(layer_idx, "attn_qnorm.weight"))
+                        .unwrap(),
+                )?,
+                q_beta: runtime.upload_f32(
+                    weights
+                        .get_f32(&wname(layer_idx, "attn_qnorm.bias"))
+                        .unwrap(),
+                )?,
+                k_gamma: runtime.upload_f32(
+                    weights
+                        .get_f32(&wname(layer_idx, "attn_knorm.weight"))
+                        .unwrap(),
+                )?,
+                k_beta: runtime.upload_f32(
+                    weights
+                        .get_f32(&wname(layer_idx, "attn_knorm.bias"))
+                        .unwrap(),
+                )?,
+                projection: runtime.prepare_linear_f32(
+                    embed,
+                    embed,
+                    weights
+                        .get_f32(&wname(layer_idx, "attn_proj.weight"))
+                        .unwrap(),
+                    weights
+                        .get_f32(&wname(layer_idx, "attn_proj.bias"))
+                        .unwrap(),
+                    weights.get_f32(&wname(layer_idx, "ls1")),
+                )?,
+            });
+        }
+        Ok(Self { runtime, layers })
+    }
+}
+
+#[cfg(feature = "cuda-residual-oracle")]
+impl AttentionExecutor for CudaAttentionExecutor {
+    fn run_attention(
+        &self,
+        layer_idx: usize,
+        input: &[f32],
+        rows: usize,
+        heads: usize,
+        head_dim: usize,
+        positions_yx: Option<&[f32]>,
+    ) -> Option<Vec<f32>> {
+        if heads != 12 || head_dim != 64 || positions_yx.is_none() || input.len() != rows * 768 {
+            return None;
+        }
+        let layer = self.layers.get(layer_idx)?;
+        let input = self.runtime.upload_f32(input).ok()?;
+        let qkv = layer.qkv.run(&input, rows).ok()?;
+        let (mut q, mut k, v) = self
+            .runtime
+            .split_qkv_hnd_f32(&qkv, rows, heads, head_dim)
+            .ok()?;
+        let positions = self.runtime.upload_f32(positions_yx?).ok()?;
+        self.runtime
+            .qk_norm_rope_f32_da3_base(
+                &mut q,
+                &mut k,
+                &layer.q_gamma,
+                &layer.q_beta,
+                &layer.k_gamma,
+                &layer.k_beta,
+                &positions,
+                heads,
+                rows,
+                100.0,
+                QK_NORM_EPS,
+            )
+            .ok()?;
+        let hnd = self
+            .runtime
+            .attention_online_f32(&q, &k, &v, heads, rows, head_dim)
+            .ok()?;
+        let token_major = self
+            .runtime
+            .hnd_to_token_f32(&hnd, rows, heads, head_dim)
+            .ok()?;
+        let output = layer.projection.run(&token_major, rows).ok()?;
+        self.runtime.download_f32(&output).ok()
     }
 }
 
@@ -309,6 +471,7 @@ fn run_attention(
     cfg: &ModelConfig,
     layer_idx: usize,
     weights: &Weights,
+    attention_executor: Option<&dyn AttentionExecutor>,
 ) -> Vec<f32> {
     let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
     let embed = cfg.embed_dim as usize;
@@ -409,6 +572,16 @@ fn run_attention(
     } else {
         Vec::new()
     };
+
+    if use_qknorm && use_rope {
+        if let Some(executor) = attention_executor {
+            if let Some(output) =
+                executor.run_attention(layer_idx, ln1_out, n, heads, head_dim, Some(&pos_yx))
+            {
+                return output;
+            }
+        }
+    }
 
     let position_started = std::time::Instant::now();
     let mut used_fused_qk_norm_rope = false;
@@ -549,6 +722,7 @@ pub(crate) fn vit_block_with_views(
     _backend: &dyn Backend,
     residual_executor: Option<&dyn ResidualAddExecutor>,
     mlp_executor: Option<&dyn MlpExecutor>,
+    attention_executor: Option<&dyn AttentionExecutor>,
 ) {
     let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
     assert_eq!(
@@ -585,7 +759,18 @@ pub(crate) fn vit_block_with_views(
     );
     let ln1_elapsed = ln1_started.elapsed();
     let attention_started = std::time::Instant::now();
-    let attn_out = run_attention(&ln1, n, gh, gw, global, view_count, cfg, layer_idx, weights);
+    let attn_out = run_attention(
+        &ln1,
+        n,
+        gh,
+        gw,
+        global,
+        view_count,
+        cfg,
+        layer_idx,
+        weights,
+        attention_executor,
+    );
     add_residual(tokens, &attn_out, residual_executor);
     let attention_elapsed = attention_started.elapsed();
 
@@ -654,6 +839,7 @@ pub(crate) fn vit_block_with_residual(
     backend: &dyn Backend,
     residual_executor: Option<&dyn ResidualAddExecutor>,
     mlp_executor: Option<&dyn MlpExecutor>,
+    attention_executor: Option<&dyn AttentionExecutor>,
 ) {
     vit_block_with_views(
         tokens,
@@ -668,6 +854,7 @@ pub(crate) fn vit_block_with_residual(
         backend,
         residual_executor,
         mlp_executor,
+        attention_executor,
     );
 }
 
@@ -683,7 +870,7 @@ pub fn vit_block(
     backend: &dyn Backend,
 ) {
     vit_block_with_residual(
-        tokens, n, gh, gw, global, cfg, layer_idx, weights, backend, None, None,
+        tokens, n, gh, gw, global, cfg, layer_idx, weights, backend, None, None, None,
     );
 }
 

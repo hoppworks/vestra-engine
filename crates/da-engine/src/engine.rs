@@ -51,7 +51,7 @@ use crate::pose::cam_pose;
 use crate::preprocess::preprocess;
 use crate::uv_embed::UvEmbedCache;
 #[cfg(feature = "cuda-residual-oracle")]
-use crate::vit_block::CudaMlpExecutor;
+use crate::vit_block::{CudaAttentionExecutor, CudaMlpExecutor};
 use crate::{dpt_head, ModelConfig};
 
 /// Quantization preference for [`weights_from_gguf`] / [`Engine::load`].
@@ -229,6 +229,8 @@ pub struct Engine {
     cuda_residual: Option<vestra_kernels::cuda::CudaRuntime>,
     #[cfg(feature = "cuda-residual-oracle")]
     cuda_mlp: Option<CudaMlpExecutor>,
+    #[cfg(feature = "cuda-residual-oracle")]
+    cuda_attention: Option<CudaAttentionExecutor>,
 }
 
 impl Engine {
@@ -259,6 +261,8 @@ impl Engine {
             cuda_residual: None,
             #[cfg(feature = "cuda-residual-oracle")]
             cuda_mlp: None,
+            #[cfg(feature = "cuda-residual-oracle")]
+            cuda_attention: None,
         })
     }
 
@@ -301,10 +305,38 @@ impl Engine {
         self.cuda_mlp.is_some()
     }
 
+    /// Enables the cached CUDA QKV → Q/K normalization/RoPE → attention →
+    /// projection parity slice for DA3-BASE. It is intentionally distinct
+    /// from a complete GPU backend until residuals, MLP, patch embedding, and
+    /// the depth head also retain their activations on the device.
+    #[cfg(feature = "cuda-residual-oracle")]
+    pub fn enable_cuda_attention_oracle(
+        &mut self,
+        device: usize,
+    ) -> Result<(), vestra_kernels::cuda::CudaError> {
+        let runtime = vestra_kernels::cuda::CudaRuntime::new(device)?;
+        self.cuda_attention = Some(CudaAttentionExecutor::new(
+            runtime,
+            &self.cfg,
+            &self.weights,
+        )?);
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda-residual-oracle")]
+    #[must_use]
+    pub fn cuda_attention_oracle_enabled(&self) -> bool {
+        self.cuda_attention.is_some()
+    }
+
     fn backbone(&self) -> Backbone<'_> {
         #[cfg(feature = "cuda-residual-oracle")]
         if let Some(executor) = self.cuda_mlp.as_ref() {
             return Backbone::new_with_mlp(&self.cfg, &self.weights, &self.backend, executor);
+        }
+        #[cfg(feature = "cuda-residual-oracle")]
+        if let Some(executor) = self.cuda_attention.as_ref() {
+            return Backbone::new_with_attention(&self.cfg, &self.weights, &self.backend, executor);
         }
         #[cfg(feature = "cuda-residual-oracle")]
         if let Some(runtime) = self.cuda_residual.as_ref() {
