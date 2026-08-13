@@ -382,6 +382,27 @@ impl<'a> Backbone<'a> {
         gw: usize,
         out_layers: &[i32],
     ) -> BackboneOutputs {
+        #[cfg(feature = "cuda-residual-oracle")]
+        if let Some(executor) = self.transformer_tail_executor {
+            // The persistent route is intentionally single-view first. Global
+            // multi-view needs distinct reference/source camera-token slots
+            // and is kept on the independently validated host adapter until
+            // that scheduler owns all view buffers on device as well.
+            if std::env::var_os("VESTRA_TRACE_DIR").is_none()
+                && self.cfg.qknorm_start >= 0
+                && self.cfg.alt_start >= self.cfg.qknorm_start
+            {
+                if let Some(cuda_executor) = executor.persistent_cuda_tail() {
+                    return self.forward_with_persistent_cuda_tail(
+                        tokens,
+                        gh,
+                        gw,
+                        out_layers,
+                        cuda_executor,
+                    );
+                }
+            }
+        }
         let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
         let cfg = self.cfg;
         let embed = cfg.embed_dim as usize;
@@ -496,6 +517,153 @@ impl<'a> Backbone<'a> {
             .collect();
 
         BackboneOutputs { feats, cam_tokens }
+    }
+
+    /// Single-view DA3-BASE backbone route which transfers tokens to CUDA at
+    /// the first Q/K-normalized block and retains them there through the final
+    /// block. Captures are the only intentional downloads in the tail: DPT is
+    /// still CPU-owned, and the caller's mutable token slice receives the
+    /// final device state for the ordinary `Backbone::forward` contract.
+    #[cfg(feature = "cuda-residual-oracle")]
+    fn forward_with_persistent_cuda_tail(
+        &self,
+        tokens: &mut [f32],
+        gh: usize,
+        gw: usize,
+        out_layers: &[i32],
+        executor: &crate::vit_block::CudaTransformerTailExecutor,
+    ) -> BackboneOutputs {
+        let cfg = self.cfg;
+        let embed = cfg.embed_dim as usize;
+        assert_eq!(
+            tokens.len() % embed,
+            0,
+            "tokens length must be a multiple of embed"
+        );
+        let n = tokens.len() / embed;
+        let n_special = 1 + cfg.num_register as usize;
+        let first_device_layer = cfg.qknorm_start as usize;
+        let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
+        let mut local_host = tokens.to_vec();
+        let mut device_tokens = None;
+        let mut device_local = None;
+        let mut feats = vec![None; out_layers.len()];
+        let mut cam_tokens = vec![None; out_layers.len()];
+
+        for layer_idx in 0..cfg.depth as usize {
+            let started = std::time::Instant::now();
+            let global =
+                cfg.alt_start >= 0 && layer_idx as i32 >= cfg.alt_start && layer_idx % 2 == 1;
+            if layer_idx < first_device_layer {
+                if cfg.alt_start >= 0 && layer_idx == cfg.alt_start as usize {
+                    let camera = self
+                        .weights
+                        .get_f32(CAMERA_TOKEN_WEIGHT)
+                        .unwrap_or_else(|| panic!("missing weight tensor {CAMERA_TOKEN_WEIGHT:?}"));
+                    tokens[..embed].copy_from_slice(&camera[..embed]);
+                }
+                vit_block_with_residual(
+                    tokens,
+                    n,
+                    gh,
+                    gw,
+                    global,
+                    cfg,
+                    layer_idx,
+                    self.weights,
+                    self.backend,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                local_host.copy_from_slice(tokens);
+            } else {
+                if device_tokens.is_none() {
+                    device_tokens = executor.upload_tokens(tokens);
+                }
+                let mut state = device_tokens
+                    .take()
+                    .expect("qualified CUDA tail must upload its first token state");
+                if cfg.alt_start >= 0 && layer_idx == cfg.alt_start as usize {
+                    executor
+                        .inject_reference_camera_token(&mut state, embed)
+                        .expect("qualified CUDA tail must inject reference camera token");
+                }
+                state = executor
+                    .run_tail_device(layer_idx, state, n, gh, gw, global, 1, cfg)
+                    .expect("qualified CUDA tail must execute its configured block");
+                device_tokens = Some(state);
+            }
+
+            if phase_profile {
+                eprintln!(
+                    "phase: transformer_block[{layer_idx}]={:.3}ms global={global} persistent_cuda={}",
+                    started.elapsed().as_secs_f64() * 1e3,
+                    layer_idx >= first_device_layer,
+                );
+            }
+
+            if layer_idx >= first_device_layer {
+                let state = device_tokens.as_ref().expect("device state exists");
+                for (slot, &wanted) in out_layers.iter().enumerate() {
+                    if wanted == layer_idx as i32 {
+                        let x = executor.download_tokens(state).expect("capture download");
+                        let local = if global {
+                            executor
+                                .download_tokens(
+                                    device_local
+                                        .as_ref()
+                                        .expect("global capture has local state"),
+                                )
+                                .expect("local capture download")
+                        } else {
+                            x.clone()
+                        };
+                        let (feat, cam) = self.post_process_capture(n, n_special, &local, &x);
+                        feats[slot] = Some(feat);
+                        cam_tokens[slot] = Some(cam);
+                    }
+                }
+                let next_is_global = layer_idx + 1 < cfg.depth as usize
+                    && cfg.alt_start >= 0
+                    && (layer_idx + 1) as i32 >= cfg.alt_start
+                    && (layer_idx + 1) % 2 == 1;
+                if !global && next_is_global {
+                    device_local =
+                        Some(executor.copy_tokens(state).expect("device local snapshot"));
+                }
+            } else {
+                for (slot, &wanted) in out_layers.iter().enumerate() {
+                    if wanted == layer_idx as i32 {
+                        let (feat, cam) =
+                            self.post_process_capture(n, n_special, &local_host, tokens);
+                        feats[slot] = Some(feat);
+                        cam_tokens[slot] = Some(cam);
+                    }
+                }
+            }
+        }
+        let final_tokens = executor
+            .download_tokens(device_tokens.as_ref().expect("final device state"))
+            .expect("final CUDA tail download");
+        tokens.copy_from_slice(&final_tokens);
+        BackboneOutputs {
+            feats: feats
+                .into_iter()
+                .enumerate()
+                .map(|(slot, value)| {
+                    value.unwrap_or_else(|| panic!("out_layers[{slot}] was never reached"))
+                })
+                .collect(),
+            cam_tokens: cam_tokens
+                .into_iter()
+                .enumerate()
+                .map(|(slot, value)| {
+                    value.unwrap_or_else(|| panic!("out_layers[{slot}] was never reached"))
+                })
+                .collect(),
+        }
     }
 
     /// Runs the pinned PR #2 ordered multi-view transformer schedule.

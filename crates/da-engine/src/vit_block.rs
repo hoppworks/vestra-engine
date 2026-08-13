@@ -94,6 +94,11 @@ pub trait AttentionExecutor {
 /// executor owns attention, both residual additions, LN2, and the complete
 /// MLP branch. `None` means the block is outside its validated subset.
 pub trait TransformerTailExecutor {
+    #[cfg(feature = "cuda-residual-oracle")]
+    fn persistent_cuda_tail(&self) -> Option<&CudaTransformerTailExecutor> {
+        None
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn run_tail(
         &self,
@@ -135,6 +140,7 @@ pub struct CudaAttentionExecutor {
 pub struct CudaTransformerTailExecutor {
     attention: CudaAttentionExecutor,
     mlp: CudaMlpExecutor,
+    camera_reference: vestra_kernels::cuda::CudaTensorF32,
 }
 
 #[cfg(feature = "cuda-residual-oracle")]
@@ -357,10 +363,55 @@ impl CudaTransformerTailExecutor {
         cfg: &ModelConfig,
         weights: &Weights,
     ) -> Result<Self, vestra_kernels::cuda::CudaError> {
+        let camera_reference = runtime.upload_f32(
+            &weights
+                .get_f32("vit.camera_token")
+                .expect("CUDA persistent tail requires vit.camera_token")
+                [..cfg.embed_dim as usize],
+        )?;
         Ok(Self {
             attention: CudaAttentionExecutor::new(runtime.clone(), cfg, weights)?,
             mlp: CudaMlpExecutor::new(runtime, cfg, weights)?,
+            camera_reference,
         })
+    }
+
+    /// Uploads a token-major activation for the persistent single-view
+    /// backbone route. Kept crate-visible so CUDA types remain below Engine's
+    /// public API boundary.
+    pub(crate) fn upload_tokens(
+        &self,
+        tokens: &[f32],
+    ) -> Option<vestra_kernels::cuda::CudaTensorF32> {
+        self.attention.runtime.upload_f32(tokens).ok()
+    }
+
+    pub(crate) fn download_tokens(
+        &self,
+        tokens: &vestra_kernels::cuda::CudaTensorF32,
+    ) -> Option<Vec<f32>> {
+        self.attention.runtime.download_f32(tokens).ok()
+    }
+
+    pub(crate) fn copy_tokens(
+        &self,
+        tokens: &vestra_kernels::cuda::CudaTensorF32,
+    ) -> Option<vestra_kernels::cuda::CudaTensorF32> {
+        self.attention.runtime.copy_f32(tokens).ok()
+    }
+
+    /// Applies DA3's reference-camera token injection without a host
+    /// activation handoff. Multi-view source-token injection is deferred with
+    /// the multi-view persistent scheduler.
+    pub(crate) fn inject_reference_camera_token(
+        &self,
+        tokens: &mut vestra_kernels::cuda::CudaTensorF32,
+        embed: usize,
+    ) -> Option<()> {
+        self.attention
+            .runtime
+            .overwrite_prefix_f32(tokens, &self.camera_reference, embed)
+            .ok()
     }
 
     /// Runs one qualified DA3-BASE transformer block entirely on device.
@@ -372,7 +423,7 @@ impl CudaTransformerTailExecutor {
     /// upload/download at each block, while the existing oracle retains its
     /// narrow, independently testable boundary.
     #[allow(clippy::too_many_arguments)]
-    fn run_tail_device(
+    pub(crate) fn run_tail_device(
         &self,
         layer_idx: usize,
         tokens: vestra_kernels::cuda::CudaTensorF32,
@@ -470,6 +521,10 @@ impl CudaTransformerTailExecutor {
 
 #[cfg(feature = "cuda-residual-oracle")]
 impl TransformerTailExecutor for CudaTransformerTailExecutor {
+    fn persistent_cuda_tail(&self) -> Option<&CudaTransformerTailExecutor> {
+        Some(self)
+    }
+
     fn run_tail(
         &self,
         layer_idx: usize,
