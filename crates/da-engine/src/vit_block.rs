@@ -155,7 +155,7 @@ impl MlpExecutor for CudaMlpExecutor {
             .expect("CUDA MLP token upload must succeed");
         let normalized = self
             .runtime
-            .layernorm_f32(
+            .layernorm_f32_cpu_order(
                 &input,
                 &layer.norm2_gamma,
                 &layer.norm2_beta,
