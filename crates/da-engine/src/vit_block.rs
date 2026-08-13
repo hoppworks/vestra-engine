@@ -199,13 +199,9 @@ impl CudaAttentionExecutor {
             cfg.head_dim, 64,
             "CUDA attention supports DA3-BASE head_dim=64 only"
         );
-        assert_eq!(
-            cfg.qknorm_start, 0,
-            "CUDA attention requires DA3-BASE Q/K norm from block zero"
-        );
-        assert_eq!(
-            cfg.rope_start, 0,
-            "CUDA attention requires DA3-BASE RoPE from block zero"
+        assert!(
+            cfg.qknorm_start >= 0 && cfg.rope_start >= 0 && cfg.qknorm_start == cfg.rope_start,
+            "CUDA attention requires paired, enabled DA3 Q/K norm and RoPE starts"
         );
         let embed = cfg.embed_dim as usize;
         let mut layers = Vec::with_capacity(cfg.depth as usize);
