@@ -129,6 +129,7 @@ pub fn patch_embed(
 pub struct CudaPatchEmbedExecutor {
     runtime: CudaRuntime,
     projection: CudaLinearF32,
+    cls: vestra_kernels::cuda::CudaTensorF32,
     patch: usize,
     embed: usize,
 }
@@ -151,6 +152,16 @@ impl CudaPatchEmbedExecutor {
             .unwrap_or_else(|| panic!("missing weight tensor {PATCH_EMBED_BIAS:?}"));
         assert_eq!(filter.len(), embed * input_features);
         assert_eq!(bias.len(), embed);
+        let cls = weights
+            .get_f32(crate::pos_embed::CLS_TOKEN_WEIGHT)
+            .unwrap_or_else(|| panic!("missing CLS token"));
+        assert_eq!(cls.len(), embed);
+        assert!(
+            weights
+                .get_f32(crate::pos_embed::REGISTER_TOKENS_WEIGHT)
+                .is_none(),
+            "CUDA patch token assembly currently supports DA3-BASE without register tokens"
+        );
         let mut projection = vec![0.0_f32; input_features * embed];
         for output in 0..embed {
             for input in 0..input_features {
@@ -165,19 +176,22 @@ impl CudaPatchEmbedExecutor {
                 bias,
                 None,
             )?,
+            cls: runtime.upload_f32(cls)?,
             runtime,
             patch,
             embed,
         })
     }
 
-    /// Executes CUDA patch lowering and projection, then explicitly downloads
-    /// token-major output for the still-CPU position-token assembly path.
+    /// Executes CUDA patch lowering, projection, and DA3-BASE CLS/position
+    /// assembly. The final download is the temporary boundary before the
+    /// still-CPU backbone.
     pub fn run(
         &self,
         image_nchw: &[f32],
         height: usize,
         width: usize,
+        position: &[f32],
     ) -> Result<(usize, usize, Vec<f32>), CudaError> {
         if height == 0
             || width == 0
@@ -196,9 +210,25 @@ impl CudaPatchEmbedExecutor {
         let patches = self
             .runtime
             .patchify_nchw_f32(&image, height, width, self.patch, CHANNELS)?;
-        let tokens = self.projection.run(&patches, gh * gw)?;
+        if position.len() != (gh * gw + 1) * self.embed {
+            return Err(CudaError::Kernel(format!(
+                "CUDA patch position shape {} does not match {} tokens × {} channels",
+                position.len(),
+                gh * gw + 1,
+                self.embed
+            )));
+        }
+        let patches = self.projection.run(&patches, gh * gw)?;
+        let position = self.runtime.upload_f32(position)?;
+        let tokens = self.runtime.prepend_cls_add_pos_f32(
+            &patches,
+            &self.cls,
+            &position,
+            gh * gw,
+            self.embed,
+        )?;
         let tokens = self.runtime.download_f32(&tokens)?;
-        debug_assert_eq!(tokens.len(), gh * gw * self.embed);
+        debug_assert_eq!(tokens.len(), (gh * gw + 1) * self.embed);
         Ok((gh, gw, tokens))
     }
 }

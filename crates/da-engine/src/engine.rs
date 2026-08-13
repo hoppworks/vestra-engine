@@ -48,8 +48,6 @@ use crate::config::EngineError;
 use crate::dpt_head::{HeadWorkspace, WinogradFilterCache};
 #[cfg(feature = "cuda-residual-oracle")]
 use crate::patch_embed::CudaPatchEmbedExecutor;
-#[cfg(feature = "cuda-residual-oracle")]
-use crate::pos_embed::assemble_tokens_from_patch_tokens;
 use crate::pos_embed::{prepare_tokens, PosEmbedCache};
 use crate::pose::cam_pose;
 use crate::preprocess::preprocess;
@@ -395,18 +393,18 @@ impl Engine {
     ) -> (usize, usize) {
         #[cfg(feature = "cuda-residual-oracle")]
         if let Some(executor) = self.cuda_patch_embed.as_ref() {
-            let (gh, gw, patches) = executor
-                .run(chw, height, width)
+            let patch = self.cfg.patch_size as usize;
+            let gh = height / patch;
+            let gw = width / patch;
+            let position = self
+                .pos_cache
+                .get_or_build(gh, gw, &self.cfg, &self.weights)
+                .to_vec();
+            let (gh, gw, tokens) = executor
+                .run(chw, height, width, &position)
                 .expect("CUDA patch embedding oracle must execute");
-            assemble_tokens_from_patch_tokens(
-                &patches,
-                gh,
-                gw,
-                &self.cfg,
-                &self.weights,
-                &mut self.pos_cache,
-                out,
-            );
+            out.clear();
+            out.extend_from_slice(&tokens);
             return (gh, gw);
         }
         prepare_tokens(
