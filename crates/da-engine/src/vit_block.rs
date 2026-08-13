@@ -139,6 +139,8 @@ pub struct CudaTransformerTailExecutor {
 
 #[cfg(feature = "cuda-residual-oracle")]
 struct CudaAttentionLayer {
+    norm1_gamma: vestra_kernels::cuda::CudaTensorF32,
+    norm1_beta: vestra_kernels::cuda::CudaTensorF32,
     qkv: vestra_kernels::cuda::CudaLinearF32,
     qk: Option<CudaQkParameters>,
     projection: vestra_kernels::cuda::CudaLinearF32,
@@ -263,6 +265,10 @@ impl CudaAttentionExecutor {
                 })
                 .transpose()?;
             layers.push(CudaAttentionLayer {
+                norm1_gamma: runtime
+                    .upload_f32(weights.get_f32(&wname(layer_idx, "norm1.weight")).unwrap())?,
+                norm1_beta: runtime
+                    .upload_f32(weights.get_f32(&wname(layer_idx, "norm1.bias")).unwrap())?,
                 qkv: runtime.prepare_linear_f32(
                     embed,
                     3 * embed,
@@ -356,22 +362,27 @@ impl CudaTransformerTailExecutor {
             mlp: CudaMlpExecutor::new(runtime, cfg, weights)?,
         })
     }
-}
 
-#[cfg(feature = "cuda-residual-oracle")]
-impl TransformerTailExecutor for CudaTransformerTailExecutor {
-    fn run_tail(
+    /// Runs one qualified DA3-BASE transformer block entirely on device.
+    ///
+    /// The caller transfers ownership of the token buffer and receives it
+    /// back after both residual branches.  This is deliberately separate
+    /// from the host-facing [`TransformerTailExecutor`] adapter below: a
+    /// persistent backbone can chain this method across layers without an
+    /// upload/download at each block, while the existing oracle retains its
+    /// narrow, independently testable boundary.
+    #[allow(clippy::too_many_arguments)]
+    fn run_tail_device(
         &self,
         layer_idx: usize,
-        tokens: &[f32],
-        ln1: &[f32],
+        tokens: vestra_kernels::cuda::CudaTensorF32,
         rows: usize,
         gh: usize,
         gw: usize,
         global: bool,
         view_count: usize,
         cfg: &ModelConfig,
-    ) -> Option<Vec<f32>> {
+    ) -> Option<vestra_kernels::cuda::CudaTensorF32> {
         let heads = cfg.num_heads as usize;
         let head_dim = cfg.head_dim as usize;
         if heads != 12 || head_dim != 64 || tokens.len() != rows * 768 {
@@ -400,7 +411,16 @@ impl TransformerTailExecutor for CudaTransformerTailExecutor {
             }
         }
         let runtime = &self.attention.runtime;
-        let ln1 = runtime.upload_f32(ln1).ok()?;
+        let ln1 = runtime
+            .layernorm_f32_cpu_order(
+                &tokens,
+                &layer.norm1_gamma,
+                &layer.norm1_beta,
+                rows,
+                768,
+                self.mlp.ln_eps,
+            )
+            .ok()?;
         let qkv = layer.qkv.run(&ln1, rows).ok()?;
         let (mut q, mut k, v) = runtime
             .split_qkv_hnd_f32(&qkv, rows, heads, head_dim)
@@ -426,7 +446,7 @@ impl TransformerTailExecutor for CudaTransformerTailExecutor {
             .ok()?;
         let token_major = runtime.hnd_to_token_f32(&hnd, rows, heads, head_dim).ok()?;
         let attention = layer.projection.run(&token_major, rows).ok()?;
-        let mut residual = runtime.upload_f32(tokens).ok()?;
+        let mut residual = tokens;
         runtime.add_f32_in_place(&mut residual, &attention).ok()?;
 
         let mlp_layer = self.mlp.layers.get(layer_idx)?;
@@ -444,7 +464,36 @@ impl TransformerTailExecutor for CudaTransformerTailExecutor {
         runtime.gelu_f32_in_place(&mut hidden).ok()?;
         let mlp = mlp_layer.fc2.run(&hidden, rows).ok()?;
         runtime.add_f32_in_place(&mut residual, &mlp).ok()?;
-        runtime.download_f32(&residual).ok()
+        Some(residual)
+    }
+}
+
+#[cfg(feature = "cuda-residual-oracle")]
+impl TransformerTailExecutor for CudaTransformerTailExecutor {
+    fn run_tail(
+        &self,
+        layer_idx: usize,
+        tokens: &[f32],
+        ln1: &[f32],
+        rows: usize,
+        gh: usize,
+        gw: usize,
+        global: bool,
+        view_count: usize,
+        cfg: &ModelConfig,
+    ) -> Option<Vec<f32>> {
+        let runtime = &self.attention.runtime;
+        // Keep the `ln1` argument in the trait contract for the legacy
+        // adapter. Device persistence deliberately recomputes it from
+        // `tokens`, using cached parameters, so it never depends on a host
+        // intermediate. The assertion also catches accidental caller drift.
+        if ln1.len() != tokens.len() {
+            return None;
+        }
+        let tokens = runtime.upload_f32(tokens).ok()?;
+        let output =
+            self.run_tail_device(layer_idx, tokens, rows, gh, gw, global, view_count, cfg)?;
+        runtime.download_f32(&output).ok()
     }
 }
 
