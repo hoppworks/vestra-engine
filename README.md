@@ -36,6 +36,9 @@ forward pass, and restores the caller's original view order. Real-model C++
 parity for `S=2,3,12`, CUDA, and streaming-window orchestration remain open
 work.
 
+The repeatable C++ comparison commands and thresholds are in
+[the multi-view oracle gate](docs/MULTIVIEW_ORACLE.md).
+
 ## CPU-F32 baseline
 
 The current durable 20-trial same-machine study on an AMD Ryzen 9 9950X,
