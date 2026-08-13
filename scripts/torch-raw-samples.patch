@@ -1,0 +1,11 @@
+diff --git a/benchmarks/bench.py b/benchmarks/bench.py
+--- a/benchmarks/bench.py
++++ b/benchmarks/bench.py
+@@ -205,6 +205,8 @@ def torch_worker(image, res, threads, repeat, device="cpu"):
+         if on_cuda:
+             torch.cuda.synchronize()
+         ms.append((_time.perf_counter() - a) * 1000.0)
++    for i, sample in enumerate(ms):
++        print(f"iter[{i}]_ms={sample:.3f}")
+     ms.sort()
+     median = ms[len(ms) // 2]

@@ -1,0 +1,843 @@
+{
+  "schema_version": 1,
+  "created_utc": "2026-08-13T07:30:31.803642+00:00",
+  "protocol": {
+    "trials": 10,
+    "repeat": 10,
+    "threads": 16,
+    "cooldown": 3.0,
+    "seed": 20260812,
+    "output": "/var/roothome/da3-bench/depth-anything-rs/docs/benchmarks/2026-08-workhorse/2026-08-13-three-way-cpu-f32",
+    "cpu_f32_direct": false,
+    "cpu_f32_three_way": true
+  },
+  "input": {
+    "path": "/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg",
+    "sha256": "936d60f43c51fe99156563a0d3c5da69cf84a39cbde5e443bea7662500b8c969"
+  },
+  "models": {
+    "f32": {
+      "path": "/var/roothome/da3-bench/models/depth-anything-base-f32.gguf",
+      "sha256": "1b13b166e8a8b4f2c862f42d36edb2f9aab995a18cc527a52b9f160b99c6b8da",
+      "bytes": 412110144
+    }
+  },
+  "software": {
+    "cpp_commit": "unavailable: Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).",
+    "ggml_commit": "unavailable: fatal: cannot change to '/var/roothome/da3-bench/third_party/ggml': No such file or directory",
+    "rust_commit": "unavailable: Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).",
+    "official_pytorch_da3_commit": "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4",
+    "official_pytorch": "2.7.1+cu128"
+  },
+  "hardware": {
+    "platform": "Linux-7.1.5-ogc5.1.fc44.x86_64-x86_64-with-glibc2.43",
+    "cpu": "AMD Ryzen 9 9950X 16-Core Processor",
+    "logical_cpus": 32,
+    "memory": "Mem:            91Gi        11Gi        45Gi       1.9Gi        41Gi        80Gi"
+  },
+  "arms": {
+    "cpp-f32-cpu": {
+      "suite": "cpu",
+      "precision": "f32",
+      "env": {},
+      "command": [
+        "/var/roothome/da3-bench/build/examples/cli/da3-cli",
+        "depth",
+        "--input",
+        "/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg",
+        "--threads",
+        "16",
+        "--repeat",
+        "10",
+        "--model",
+        "/var/roothome/da3-bench/models/depth-anything-base-f32.gguf"
+      ]
+    },
+    "pytorch-f32-cpu": {
+      "suite": "cpu",
+      "precision": "f32",
+      "env": {
+        "OMP_NUM_THREADS": "16",
+        "MKL_NUM_THREADS": "16"
+      },
+      "rss_available": false,
+      "command": [
+        "podman",
+        "exec",
+        "-e",
+        "PYTHONPATH=/opt/da3/src",
+        "-e",
+        "OMP_NUM_THREADS=16",
+        "-e",
+        "MKL_NUM_THREADS=16",
+        "da3-pytorch-bench",
+        "python",
+        "/benchroot/depth-anything-rs/scripts/bench_official_da3.py",
+        "--model",
+        "depth-anything/DA3-BASE",
+        "--image",
+        "/benchroot/src/depth-anything.cpp/assets/samples/mountains.jpg",
+        "--res",
+        "504",
+        "--threads",
+        "16",
+        "--warmup",
+        "1",
+        "--repeat",
+        "10"
+      ]
+    },
+    "rust-f32-cpu": {
+      "suite": "cpu",
+      "precision": "f32",
+      "env": {
+        "RAYON_NUM_THREADS": "16"
+      },
+      "command": [
+        "/var/roothome/da3-bench/depth-anything-rs/target/release/da",
+        "bench",
+        "--model",
+        "/var/roothome/da3-bench/models/depth-anything-base-f32.gguf",
+        "--image",
+        "/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg",
+        "--warmup",
+        "1",
+        "--repeat",
+        "10"
+      ]
+    }
+  },
+  "runs": [
+    {
+      "suite": "cpu",
+      "trial": 1,
+      "position": 1,
+      "arm": "pytorch-f32-cpu",
+      "samples_ms": [
+        249.042585,
+        271.196241,
+        248.801637,
+        253.707612,
+        252.932598,
+        246.531343,
+        259.356954,
+        248.677997,
+        270.987293,
+        254.469158
+      ],
+      "median_ms": 253.320105,
+      "mean_ms": 255.5703418,
+      "p95_ms": 271.196241,
+      "rss_mb": null,
+      "wall_s": 5.560553073883057
+    },
+    {
+      "suite": "cpu",
+      "trial": 1,
+      "position": 2,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        182.069,
+        175.094,
+        156.487,
+        156.972,
+        156.976,
+        168.315,
+        160.11,
+        158.873,
+        157.754,
+        176.754
+      ],
+      "median_ms": 159.4915,
+      "mean_ms": 164.9404,
+      "p95_ms": 182.069,
+      "rss_mb": 803.2578125,
+      "wall_s": 2.347529172897339
+    },
+    {
+      "suite": "cpu",
+      "trial": 1,
+      "position": 3,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        226.217,
+        237.164,
+        256.487,
+        238.178,
+        239.589,
+        229.894,
+        234.804,
+        236.982,
+        240.923,
+        224.322
+      ],
+      "median_ms": 237.07299999999998,
+      "mean_ms": 236.456,
+      "p95_ms": 256.487,
+      "rss_mb": 619.375,
+      "wall_s": 2.824146032333374
+    },
+    {
+      "suite": "cpu",
+      "trial": 2,
+      "position": 1,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        241.149,
+        238.332,
+        232.662,
+        222.98,
+        248.174,
+        247.88,
+        235.139,
+        234.698,
+        237.253,
+        234.009
+      ],
+      "median_ms": 236.196,
+      "mean_ms": 237.2276,
+      "p95_ms": 248.174,
+      "rss_mb": 617.69921875,
+      "wall_s": 2.8338639736175537
+    },
+    {
+      "suite": "cpu",
+      "trial": 2,
+      "position": 2,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        184.584,
+        180.178,
+        160.838,
+        165.328,
+        172.248,
+        159.183,
+        160.799,
+        183.453,
+        182.603,
+        167.876
+      ],
+      "median_ms": 170.062,
+      "mean_ms": 171.709,
+      "p95_ms": 184.584,
+      "rss_mb": 804.36328125,
+      "wall_s": 2.3965847492218018
+    },
+    {
+      "suite": "cpu",
+      "trial": 2,
+      "position": 3,
+      "arm": "pytorch-f32-cpu",
+      "samples_ms": [
+        255.284495,
+        255.388234,
+        264.34958,
+        259.293976,
+        266.711683,
+        256.734544,
+        255.282374,
+        252.842383,
+        249.716424,
+        263.558175
+      ],
+      "median_ms": 256.061389,
+      "mean_ms": 257.9161868,
+      "p95_ms": 266.711683,
+      "rss_mb": null,
+      "wall_s": 5.568576097488403
+    },
+    {
+      "suite": "cpu",
+      "trial": 3,
+      "position": 1,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        235.673,
+        230.093,
+        237.159,
+        245.732,
+        241.837,
+        242.186,
+        235.338,
+        240.576,
+        240.958,
+        238.348
+      ],
+      "median_ms": 239.462,
+      "mean_ms": 238.79000000000002,
+      "p95_ms": 245.732,
+      "rss_mb": 619.3046875,
+      "wall_s": 2.849586009979248
+    },
+    {
+      "suite": "cpu",
+      "trial": 3,
+      "position": 2,
+      "arm": "pytorch-f32-cpu",
+      "samples_ms": [
+        262.175915,
+        259.483325,
+        256.255847,
+        259.874512,
+        261.576399,
+        255.235595,
+        261.926657,
+        262.397134,
+        254.632279,
+        259.178337
+      ],
+      "median_ms": 259.6789185,
+      "mean_ms": 259.2736,
+      "p95_ms": 262.397134,
+      "rss_mb": null,
+      "wall_s": 5.574488162994385
+    },
+    {
+      "suite": "cpu",
+      "trial": 3,
+      "position": 3,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        159.174,
+        165.112,
+        163.062,
+        157.965,
+        157.028,
+        155.637,
+        160.292,
+        165.63,
+        157.826,
+        180.916
+      ],
+      "median_ms": 159.733,
+      "mean_ms": 162.26420000000002,
+      "p95_ms": 180.916,
+      "rss_mb": 803.984375,
+      "wall_s": 2.3119800090789795
+    },
+    {
+      "suite": "cpu",
+      "trial": 4,
+      "position": 1,
+      "arm": "pytorch-f32-cpu",
+      "samples_ms": [
+        255.722431,
+        266.805012,
+        260.870044,
+        254.256252,
+        258.031535,
+        256.919723,
+        264.903505,
+        273.485194,
+        252.467005,
+        254.5464
+      ],
+      "median_ms": 257.475629,
+      "mean_ms": 259.8007101,
+      "p95_ms": 273.485194,
+      "rss_mb": null,
+      "wall_s": 5.5460734367370605
+    },
+    {
+      "suite": "cpu",
+      "trial": 4,
+      "position": 2,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        165.508,
+        187.59,
+        175.441,
+        167.792,
+        163.13,
+        189.213,
+        185.66,
+        185.188,
+        187.1,
+        179.638
+      ],
+      "median_ms": 182.413,
+      "mean_ms": 178.626,
+      "p95_ms": 189.213,
+      "rss_mb": 803.59375,
+      "wall_s": 2.4998867511749268
+    },
+    {
+      "suite": "cpu",
+      "trial": 4,
+      "position": 3,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        241.586,
+        237.568,
+        228.9,
+        225.224,
+        242.402,
+        262.656,
+        240.859,
+        236.273,
+        241.624,
+        241.106
+      ],
+      "median_ms": 240.98250000000002,
+      "mean_ms": 239.8198,
+      "p95_ms": 262.656,
+      "rss_mb": 618.69140625,
+      "wall_s": 2.855153799057007
+    },
+    {
+      "suite": "cpu",
+      "trial": 5,
+      "position": 1,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        161.946,
+        158.548,
+        183.968,
+        177.64,
+        159.446,
+        168.24,
+        158.35,
+        182.323,
+        180.222,
+        175.11
+      ],
+      "median_ms": 171.675,
+      "mean_ms": 170.57930000000002,
+      "p95_ms": 183.968,
+      "rss_mb": 803.95703125,
+      "wall_s": 2.3870792388916016
+    },
+    {
+      "suite": "cpu",
+      "trial": 5,
+      "position": 2,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        236.925,
+        242.809,
+        238.514,
+        244.958,
+        240.835,
+        241.358,
+        241.489,
+        237.952,
+        230.615,
+        235.159
+      ],
+      "median_ms": 239.67450000000002,
+      "mean_ms": 239.0614,
+      "p95_ms": 244.958,
+      "rss_mb": 619.01171875,
+      "wall_s": 2.8499772548675537
+    },
+    {
+      "suite": "cpu",
+      "trial": 5,
+      "position": 3,
+      "arm": "pytorch-f32-cpu",
+      "samples_ms": [
+        260.423868,
+        254.703579,
+        270.670055,
+        261.976707,
+        264.677797,
+        255.067696,
+        277.940101,
+        254.839358,
+        257.070192,
+        261.265341
+      ],
+      "median_ms": 260.8446045,
+      "mean_ms": 261.8634694,
+      "p95_ms": 277.940101,
+      "rss_mb": null,
+      "wall_s": 5.611904859542847
+    },
+    {
+      "suite": "cpu",
+      "trial": 6,
+      "position": 1,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        235.106,
+        236.098,
+        240.936,
+        236.482,
+        233.223,
+        234.434,
+        241.736,
+        246.065,
+        242.421,
+        240.612
+      ],
+      "median_ms": 238.547,
+      "mean_ms": 238.7113,
+      "p95_ms": 246.065,
+      "rss_mb": 620.05859375,
+      "wall_s": 2.8528640270233154
+    },
+    {
+      "suite": "cpu",
+      "trial": 6,
+      "position": 2,
+      "arm": "pytorch-f32-cpu",
+      "samples_ms": [
+        245.785983,
+        248.581513,
+        253.397098,
+        250.778387,
+        253.576657,
+        250.840787,
+        254.59824,
+        253.738326,
+        247.228912,
+        245.211647
+      ],
+      "median_ms": 250.80958700000002,
+      "mean_ms": 250.373755,
+      "p95_ms": 254.59824,
+      "rss_mb": null,
+      "wall_s": 5.617353677749634
+    },
+    {
+      "suite": "cpu",
+      "trial": 6,
+      "position": 3,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        183.417,
+        166.535,
+        162.756,
+        163.776,
+        186.043,
+        161.423,
+        157.053,
+        165.456,
+        175.517,
+        175.487
+      ],
+      "median_ms": 165.9955,
+      "mean_ms": 169.7463,
+      "p95_ms": 186.043,
+      "rss_mb": 804.234375,
+      "wall_s": 2.3717727661132812
+    },
+    {
+      "suite": "cpu",
+      "trial": 7,
+      "position": 1,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        236.128,
+        244.937,
+        249.264,
+        252.267,
+        237.122,
+        239.271,
+        250.647,
+        252.88,
+        232.684,
+        257.078
+      ],
+      "median_ms": 247.1005,
+      "mean_ms": 245.22779999999997,
+      "p95_ms": 257.078,
+      "rss_mb": 618.23828125,
+      "wall_s": 2.917592763900757
+    },
+    {
+      "suite": "cpu",
+      "trial": 7,
+      "position": 2,
+      "arm": "pytorch-f32-cpu",
+      "samples_ms": [
+        260.20179,
+        257.883636,
+        258.970238,
+        250.906896,
+        258.470322,
+        260.739955,
+        256.444396,
+        257.30809,
+        279.291882,
+        264.750957
+      ],
+      "median_ms": 258.72028,
+      "mean_ms": 260.4968162,
+      "p95_ms": 279.291882,
+      "rss_mb": null,
+      "wall_s": 5.764153242111206
+    },
+    {
+      "suite": "cpu",
+      "trial": 7,
+      "position": 3,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        164.396,
+        161.519,
+        189.806,
+        187.058,
+        172.027,
+        176.715,
+        182.275,
+        182.746,
+        182.727,
+        182.511
+      ],
+      "median_ms": 182.393,
+      "mean_ms": 178.178,
+      "p95_ms": 189.806,
+      "rss_mb": 803.3984375,
+      "wall_s": 2.4541215896606445
+    },
+    {
+      "suite": "cpu",
+      "trial": 8,
+      "position": 1,
+      "arm": "pytorch-f32-cpu",
+      "samples_ms": [
+        258.873629,
+        249.227908,
+        259.697553,
+        251.221144,
+        253.726855,
+        256.645115,
+        253.571527,
+        260.487897,
+        267.879474,
+        257.065272
+      ],
+      "median_ms": 256.8551935,
+      "mean_ms": 256.8396374,
+      "p95_ms": 267.879474,
+      "rss_mb": null,
+      "wall_s": 5.570411443710327
+    },
+    {
+      "suite": "cpu",
+      "trial": 8,
+      "position": 2,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        185.966,
+        187.816,
+        188.118,
+        169.591,
+        184.005,
+        185.775,
+        182.465,
+        185.326,
+        179.987,
+        166.539
+      ],
+      "median_ms": 184.6655,
+      "mean_ms": 181.5588,
+      "p95_ms": 188.118,
+      "rss_mb": 803.71484375,
+      "wall_s": 2.5054197311401367
+    },
+    {
+      "suite": "cpu",
+      "trial": 8,
+      "position": 3,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        242.921,
+        244.274,
+        237.976,
+        245.826,
+        237.667,
+        236.034,
+        234.411,
+        245.721,
+        250.554,
+        224.053
+      ],
+      "median_ms": 240.4485,
+      "mean_ms": 239.94369999999998,
+      "p95_ms": 250.554,
+      "rss_mb": 619.265625,
+      "wall_s": 2.8672707080841064
+    },
+    {
+      "suite": "cpu",
+      "trial": 9,
+      "position": 1,
+      "arm": "pytorch-f32-cpu",
+      "samples_ms": [
+        265.681384,
+        251.877062,
+        259.351949,
+        260.825338,
+        258.504425,
+        262.321887,
+        256.045142,
+        258.965582,
+        254.200236,
+        280.782428
+      ],
+      "median_ms": 259.15876549999996,
+      "mean_ms": 260.8555433,
+      "p95_ms": 280.782428,
+      "rss_mb": null,
+      "wall_s": 5.722395181655884
+    },
+    {
+      "suite": "cpu",
+      "trial": 9,
+      "position": 2,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        227.675,
+        245.701,
+        229.289,
+        238.611,
+        244.728,
+        232.475,
+        239.078,
+        236.575,
+        252.662,
+        229.774
+      ],
+      "median_ms": 237.593,
+      "mean_ms": 237.65680000000003,
+      "p95_ms": 252.662,
+      "rss_mb": 618.20703125,
+      "wall_s": 2.832357406616211
+    },
+    {
+      "suite": "cpu",
+      "trial": 9,
+      "position": 3,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        166.682,
+        160.02,
+        180.207,
+        188.035,
+        174.647,
+        163.6,
+        180.071,
+        184.556,
+        164.855,
+        161.533
+      ],
+      "median_ms": 170.66449999999998,
+      "mean_ms": 172.42059999999998,
+      "p95_ms": 188.035,
+      "rss_mb": 803.99609375,
+      "wall_s": 2.3988070487976074
+    },
+    {
+      "suite": "cpu",
+      "trial": 10,
+      "position": 1,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        163.025,
+        160.102,
+        158.157,
+        158.876,
+        186.155,
+        183.561,
+        183.179,
+        164.535,
+        160.135,
+        177.338
+      ],
+      "median_ms": 163.78,
+      "mean_ms": 169.5063,
+      "p95_ms": 186.155,
+      "rss_mb": 803.640625,
+      "wall_s": 2.371859073638916
+    },
+    {
+      "suite": "cpu",
+      "trial": 10,
+      "position": 2,
+      "arm": "pytorch-f32-cpu",
+      "samples_ms": [
+        254.640462,
+        256.035682,
+        253.324071,
+        250.884648,
+        254.817901,
+        257.024515,
+        254.511602,
+        256.870607,
+        257.260064,
+        259.605957
+      ],
+      "median_ms": 255.4267915,
+      "mean_ms": 255.4975509,
+      "p95_ms": 259.605957,
+      "rss_mb": null,
+      "wall_s": 5.567476511001587
+    },
+    {
+      "suite": "cpu",
+      "trial": 10,
+      "position": 3,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        243.698,
+        238.1,
+        240.305,
+        237.911,
+        238.61,
+        236.185,
+        232.024,
+        234.685,
+        233.506,
+        234.127
+      ],
+      "median_ms": 237.048,
+      "mean_ms": 236.9151,
+      "p95_ms": 243.698,
+      "rss_mb": 617.9375,
+      "wall_s": 2.832796335220337
+    }
+  ],
+  "summary": {
+    "cpp-f32-cpu": {
+      "trials": 10,
+      "samples": 100,
+      "trial_median_mean_ms": 239.4125,
+      "trial_median_median_ms": 239.0045,
+      "trial_median_sd_ms": 3.130216490560648,
+      "mean_95ci_ms": [
+        237.1734335856766,
+        241.65156641432338
+      ],
+      "all_samples_p95_ms": 252.267,
+      "rss_mean_mb": 618.77890625
+    },
+    "pytorch-f32-cpu": {
+      "trials": 10,
+      "samples": 100,
+      "trial_median_mean_ms": 256.83512635,
+      "trial_median_median_ms": 257.16541125000003,
+      "trial_median_sd_ms": 3.069046077498485,
+      "mean_95ci_ms": [
+        254.63981557297862,
+        259.03043712702134
+      ],
+      "all_samples_p95_ms": 270.987293,
+      "rss_mean_mb": null
+    },
+    "rust-f32-cpu": {
+      "trials": 10,
+      "samples": 100,
+      "trial_median_mean_ms": 171.0873,
+      "trial_median_median_ms": 170.36325,
+      "trial_median_sd_ms": 9.337731143056114,
+      "mean_95ci_ms": [
+        164.40795361886398,
+        177.766646381136
+      ],
+      "all_samples_p95_ms": 187.59,
+      "rss_mean_mb": 803.8140625
+    }
+  }
+}

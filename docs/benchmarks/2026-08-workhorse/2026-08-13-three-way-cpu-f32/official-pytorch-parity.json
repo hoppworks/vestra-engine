@@ -1,0 +1,71 @@
+{
+  "reference": "C++/ggml F32",
+  "candidate": "official PyTorch DA3-BASE F32",
+  "acceptance": {
+    "pearson_r": 0.9999,
+    "mae": 0.005
+  },
+  "images": {
+    "canyon": {
+      "candidate_max": 4.576623439788818,
+      "candidate_min": 0.2841847240924835,
+      "count": 169344,
+      "mae": 0.0018064309490910778,
+      "max_abs_error": 0.03311419486999512,
+      "pearson_r": 0.9999913586174375,
+      "reference_max": 4.586330890655518,
+      "reference_min": 0.2848954200744629,
+      "rmse": 0.0031659312684191782,
+      "shape": [
+        336,
+        504
+      ]
+    },
+    "desk": {
+      "candidate_max": 2.118171453475952,
+      "candidate_min": 0.7304836511611938,
+      "count": 169344,
+      "mae": 0.0029007141233385963,
+      "max_abs_error": 0.03152334690093994,
+      "pearson_r": 0.9999748552749662,
+      "reference_max": 2.127098321914673,
+      "reference_min": 0.7308878898620605,
+      "rmse": 0.004703536089336355,
+      "shape": [
+        336,
+        504
+      ]
+    },
+    "mountains": {
+      "candidate_max": 3.7615416049957275,
+      "candidate_min": 0.4365229606628418,
+      "count": 169344,
+      "mae": 0.0036696783806889326,
+      "max_abs_error": 0.033631086349487305,
+      "pearson_r": 0.9999802500728873,
+      "reference_max": 3.756382942199707,
+      "reference_min": 0.43703123927116394,
+      "rmse": 0.005750603384951907,
+      "shape": [
+        336,
+        504
+      ]
+    },
+    "street": {
+      "candidate_max": 1.2953965663909912,
+      "candidate_min": 0.8843827843666077,
+      "count": 169344,
+      "mae": 0.0018223984429552216,
+      "max_abs_error": 0.030863523483276367,
+      "pearson_r": 0.9999601581285389,
+      "reference_max": 1.301213264465332,
+      "reference_min": 0.8855266571044922,
+      "rmse": 0.002681121756292646,
+      "shape": [
+        336,
+        504
+      ]
+    }
+  },
+  "passes": true
+}

@@ -21,9 +21,20 @@ fn model() -> Option<GgufFile> {
 /// `da_engine::vit_block::run_linear`) requires — see `vit_block.rs`'s
 /// module doc comment ("Linear-weight orientation") for the full rationale.
 /// This is a test-local, minimal stand-in for Task 20's real weight-loading.
-fn load_transposed_2d(g: &GgufFile, name: &str, out_features: usize, in_features: usize) -> Vec<f32> {
-    let t = g.tensor_f32(name).unwrap_or_else(|e| panic!("missing/unreadable tensor {name:?}: {e}"));
-    assert_eq!(t.data.len(), out_features * in_features, "{name} unexpected element count");
+fn load_transposed_2d(
+    g: &GgufFile,
+    name: &str,
+    out_features: usize,
+    in_features: usize,
+) -> Vec<f32> {
+    let t = g
+        .tensor_f32(name)
+        .unwrap_or_else(|e| panic!("missing/unreadable tensor {name:?}: {e}"));
+    assert_eq!(
+        t.data.len(),
+        out_features * in_features,
+        "{name} unexpected element count"
+    );
     let mut out = vec![0f32; in_features * out_features];
     for o in 0..out_features {
         for i in 0..in_features {
@@ -53,7 +64,9 @@ fn load_weights(g: &GgufFile, cfg: &ModelConfig) -> Weights {
         da_engine::POS_EMBED_WEIGHT,
         da_engine::CLS_TOKEN_WEIGHT,
     ] {
-        let t = g.tensor_f32(name).unwrap_or_else(|e| panic!("missing/unreadable tensor {name:?}: {e}"));
+        let t = g
+            .tensor_f32(name)
+            .unwrap_or_else(|e| panic!("missing/unreadable tensor {name:?}: {e}"));
         w.insert_f32(name, t.data);
     }
     if let Some(rt) = load_1d(g, da_engine::REGISTER_TOKENS_WEIGHT) {
@@ -63,7 +76,9 @@ fn load_weights(g: &GgufFile, cfg: &ModelConfig) -> Weights {
     // post-process (vit.norm always) and camera-token injection (only when
     // cfg.alt_start >= 0, but harmless to load unconditionally).
     for name in [da_engine::VIT_NORM_WEIGHT, da_engine::VIT_NORM_BIAS] {
-        let t = g.tensor_f32(name).unwrap_or_else(|e| panic!("missing/unreadable tensor {name:?}: {e}"));
+        let t = g
+            .tensor_f32(name)
+            .unwrap_or_else(|e| panic!("missing/unreadable tensor {name:?}: {e}"));
         w.insert_f32(name, t.data);
     }
     if let Some(ct) = load_1d(g, da_engine::CAMERA_TOKEN_WEIGHT) {
@@ -73,7 +88,14 @@ fn load_weights(g: &GgufFile, cfg: &ModelConfig) -> Weights {
     for i in 0..cfg.depth as usize {
         let p = |suffix: &str| format!("vit.blk.{i}.{suffix}");
 
-        for suffix in ["norm1.weight", "norm1.bias", "norm2.weight", "norm2.bias", "attn_qkv.bias", "attn_proj.bias"] {
+        for suffix in [
+            "norm1.weight",
+            "norm1.bias",
+            "norm2.weight",
+            "norm2.bias",
+            "attn_qkv.bias",
+            "attn_proj.bias",
+        ] {
             let name = p(suffix);
             if let Some(v) = load_1d(g, &name) {
                 w.insert_f32(name, v);
@@ -81,17 +103,29 @@ fn load_weights(g: &GgufFile, cfg: &ModelConfig) -> Weights {
         }
 
         let qkv_name = p("attn_qkv.weight");
-        w.insert_f32(qkv_name.clone(), load_transposed_2d(g, &qkv_name, 3 * embed, embed));
+        w.insert_f32(
+            qkv_name.clone(),
+            load_transposed_2d(g, &qkv_name, 3 * embed, embed),
+        );
         let proj_name = p("attn_proj.weight");
-        w.insert_f32(proj_name.clone(), load_transposed_2d(g, &proj_name, embed, embed));
+        w.insert_f32(
+            proj_name.clone(),
+            load_transposed_2d(g, &proj_name, embed, embed),
+        );
         let fc1w = p("mlp_fc1.weight");
-        w.insert_f32(fc1w.clone(), load_transposed_2d(g, &fc1w, mlp_hidden, embed));
+        w.insert_f32(
+            fc1w.clone(),
+            load_transposed_2d(g, &fc1w, mlp_hidden, embed),
+        );
         let fc1b = p("mlp_fc1.bias");
         if let Some(v) = load_1d(g, &fc1b) {
             w.insert_f32(fc1b, v);
         }
         let fc2w = p("mlp_fc2.weight");
-        w.insert_f32(fc2w.clone(), load_transposed_2d(g, &fc2w, embed, mlp_hidden));
+        w.insert_f32(
+            fc2w.clone(),
+            load_transposed_2d(g, &fc2w, embed, mlp_hidden),
+        );
         let fc2b = p("mlp_fc2.bias");
         if let Some(v) = load_1d(g, &fc2b) {
             w.insert_f32(fc2b, v);
@@ -104,7 +138,12 @@ fn load_weights(g: &GgufFile, cfg: &ModelConfig) -> Weights {
                 w.insert_f32(name, v);
             }
         }
-        for suffix in ["attn_qnorm.weight", "attn_qnorm.bias", "attn_knorm.weight", "attn_knorm.bias"] {
+        for suffix in [
+            "attn_qnorm.weight",
+            "attn_qnorm.bias",
+            "attn_knorm.weight",
+            "attn_knorm.bias",
+        ] {
             let name = p(suffix);
             if let Some(v) = load_1d(g, &name) {
                 assert_eq!(v.len(), head_dim, "{name} expected head_dim");
@@ -166,7 +205,8 @@ fn backbone_forward_matches_reference_feat_and_cam_layers() {
 
     let mut cache = PosEmbedCache::new();
     let mut tokens = Vec::new();
-    let (gh, gw) = da_engine::prepare_tokens(&input.data, h, w, &cfg, &weights, &mut cache, &mut tokens);
+    let (gh, gw) =
+        da_engine::prepare_tokens(&input.data, h, w, &cfg, &weights, &mut cache, &mut tokens);
 
     let backend = CpuBackend::new();
     let bb = Backbone::new(&cfg, &weights, &backend);
@@ -176,10 +216,22 @@ fn backbone_forward_matches_reference_feat_and_cam_layers() {
     for (i, idx) in out_layers.iter().enumerate() {
         let feat_dump = format!("feat_{idx}");
         let expected_feat = d.reference(&feat_dump).unwrap();
-        assert_parity(&out.feats[i], &expected_feat.data, d.atol(), d.rtol(), &feat_dump);
+        assert_parity(
+            &out.feats[i],
+            &expected_feat.data,
+            d.atol(),
+            d.rtol(),
+            &feat_dump,
+        );
 
         let cam_dump = format!("cam_token_{idx}");
         let expected_cam = d.reference(&cam_dump).unwrap();
-        assert_parity(&out.cam_tokens[i], &expected_cam.data, d.atol(), d.rtol(), &cam_dump);
+        assert_parity(
+            &out.cam_tokens[i],
+            &expected_cam.data,
+            d.atol(),
+            d.rtol(),
+            &cam_dump,
+        );
     }
 }

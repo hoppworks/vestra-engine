@@ -121,7 +121,9 @@ fn run_linear(
     if !gelu {
         if let Some(name) = ls_name {
             if let Some(gamma) = weights.get_f32(name) {
-                if da_kernels::linear_bias_scale_f32_da3_base(m, n, k, x_in, weight, bias, gamma, &mut out) {
+                if da_kernels::linear_bias_scale_f32_da3_base(
+                    m, n, k, x_in, weight, bias, gamma, &mut out,
+                ) {
                     return out;
                 }
             }
@@ -142,9 +144,8 @@ fn run_linear(
 
 /// Runs the attention sub-block: fused QKV linear -> split/transpose into
 /// per-head layout -> `Op::Attention` (optional qk-norm, optional RoPE,
-/// scaled-dot-product core) -> transpose back -> output projection
-/// (+ `ls1` if present). Returns `[n, embed_dim]`, ready to be added onto
-/// the block's residual stream by the caller.
+/// scaled-dot-product core) -> output projection (+ `ls1` if present). Returns
+/// the projected token-major buffer ready for the residual addition.
 ///
 /// `gh`/`gw` (the patch-grid resolution) are only used to derive RoPE
 /// positions when `rope` is active; they're ignored otherwise (including
@@ -175,23 +176,38 @@ fn run_attention(
     let mut k = vec![0f32; heads * n * head_dim];
     let mut v = vec![0f32; heads * n * head_dim];
     let qkv_started = std::time::Instant::now();
-    let qkv_weight = weights.get_f32(&wname(layer_idx, "attn_qkv.weight")).unwrap();
+    let qkv_weight = weights
+        .get_f32(&wname(layer_idx, "attn_qkv.weight"))
+        .unwrap();
     let qkv_bias = weights.get_f32(&wname(layer_idx, "attn_qkv.bias")).unwrap();
-    let direct_qkv = da_kernels::qkv_f32_da3_base(ln1_out, qkv_weight, qkv_bias, &mut q, &mut k, &mut v);
+    let direct_qkv =
+        da_kernels::qkv_f32_da3_base(ln1_out, qkv_weight, qkv_bias, &mut q, &mut k, &mut v);
     let qkv_elapsed = qkv_started.elapsed();
     let pack_elapsed;
     if direct_qkv {
         pack_elapsed = std::time::Duration::ZERO;
     } else {
-        let qkv = run_linear(ln1_out, n, embed, 3 * embed, &wname(layer_idx, "attn_qkv.weight"), &wname(layer_idx, "attn_qkv.bias"), false, None, weights);
+        let qkv = run_linear(
+            ln1_out,
+            n,
+            embed,
+            3 * embed,
+            &wname(layer_idx, "attn_qkv.weight"),
+            &wname(layer_idx, "attn_qkv.bias"),
+            false,
+            None,
+            weights,
+        );
         let pack_started = std::time::Instant::now();
         for t in 0..n {
             let row = &qkv[t * 3 * embed..(t + 1) * 3 * embed];
             for h in 0..heads {
-                let dst = (h * n + t) * head_dim; let src = h * head_dim;
+                let dst = (h * n + t) * head_dim;
+                let src = h * head_dim;
                 q[dst..dst + head_dim].copy_from_slice(&row[src..src + head_dim]);
                 k[dst..dst + head_dim].copy_from_slice(&row[embed + src..embed + src + head_dim]);
-                v[dst..dst + head_dim].copy_from_slice(&row[2 * embed + src..2 * embed + src + head_dim]);
+                v[dst..dst + head_dim]
+                    .copy_from_slice(&row[2 * embed + src..2 * embed + src + head_dim]);
             }
         }
         pack_elapsed = pack_started.elapsed();

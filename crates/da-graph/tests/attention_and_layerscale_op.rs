@@ -153,14 +153,41 @@ fn attention_op_qk_norm_uses_qk_norm_eps_not_ln_eps() {
     let graph_out = out[0].clone();
 
     // Manual reference using the CORRECT eps (1e-5).
-    let manual_correct = manual_qk_norm_attention(&q, &k, &v, heads, n, head_dim, &qn_gamma, &qn_beta, &kn_gamma, &kn_beta, QK_NORM_EPS);
+    let manual_correct = manual_qk_norm_attention(
+        &q,
+        &k,
+        &v,
+        heads,
+        n,
+        head_dim,
+        &qn_gamma,
+        &qn_beta,
+        &kn_gamma,
+        &kn_beta,
+        QK_NORM_EPS,
+    );
     // Manual reference using the WRONG eps (block ln_eps, 1e-6).
-    let manual_wrong = manual_qk_norm_attention(&q, &k, &v, heads, n, head_dim, &qn_gamma, &qn_beta, &kn_gamma, &kn_beta, WRONG_LN_EPS);
+    let manual_wrong = manual_qk_norm_attention(
+        &q,
+        &k,
+        &v,
+        heads,
+        n,
+        head_dim,
+        &qn_gamma,
+        &qn_beta,
+        &kn_gamma,
+        &kn_beta,
+        WRONG_LN_EPS,
+    );
 
     let diff_correct = max_abs_diff(&graph_out, &manual_correct);
     let diff_wrong = max_abs_diff(&graph_out, &manual_wrong);
 
-    assert!(diff_correct < 1e-6, "graph output should match the 1e-5-eps reference: max|d|={diff_correct}");
+    assert!(
+        diff_correct < 1e-6,
+        "graph output should match the 1e-5-eps reference: max|d|={diff_correct}"
+    );
     assert!(
         diff_wrong > 1e-8,
         "graph output should NOT match a reference using the wrong (ln_eps=1e-6) epsilon — \
@@ -215,7 +242,10 @@ fn attention_op_rope_changes_output_relative_to_no_rope() {
         None,
         None,
         1e-5,
-        Some(RopeParams { pos_yx: pos2, freq: 100.0 }),
+        Some(RopeParams {
+            pos_yx: pos2,
+            freq: 100.0,
+        }),
     );
     b2.output(out2);
     let plan2 = b2.build().compile();
@@ -223,7 +253,10 @@ fn attention_op_rope_changes_output_relative_to_no_rope() {
 
     assert_eq!(no_rope.len(), with_rope.len());
     let diff = max_abs_diff(&no_rope, &with_rope);
-    assert!(diff > 1e-4, "RoPE should change attention output: max|d|={diff}");
+    assert!(
+        diff > 1e-4,
+        "RoPE should change attention output: max|d|={diff}"
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -250,7 +283,10 @@ fn manual_qk_norm_attention(
 }
 
 fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max)
 }
 
 /// Deterministic, dependency-free PRNG (Xorshift32) for reproducible test data.

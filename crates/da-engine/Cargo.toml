@@ -9,6 +9,7 @@ da-gguf = { path = "../da-gguf" }
 da-kernels = { path = "../da-kernels" }
 da-graph = { path = "../da-graph" }
 thiserror.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 da-parity = { path = "../../da-parity" }

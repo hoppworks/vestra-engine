@@ -7,7 +7,15 @@ use rayon::prelude::*;
 ///
 /// - `input`: `c*ih*iw`
 /// - `out`: `c*oh*ow`
-pub fn bilinear_resize(input: &[f32], c: usize, ih: usize, iw: usize, oh: usize, ow: usize, out: &mut [f32]) {
+pub fn bilinear_resize(
+    input: &[f32],
+    c: usize,
+    ih: usize,
+    iw: usize,
+    oh: usize,
+    ow: usize,
+    out: &mut [f32],
+) {
     debug_assert_eq!(input.len(), c * ih * iw);
     debug_assert_eq!(out.len(), c * oh * ow);
 
@@ -21,37 +29,51 @@ pub fn bilinear_resize(input: &[f32], c: usize, ih: usize, iw: usize, oh: usize,
     // Pro-Zeile/Spalte vorab die Quellkoordinate + Nachbarindizes + Gewicht
     // berechnen (getrennt fuer y und x), das spart die wiederholte
     // Neuberechnung pro Kanal.
-    let (y0s, y1s, wy): (Vec<usize>, Vec<usize>, Vec<f32>) = (0..oh)
-        .map(|oy| src_coord(oy, scale_y, ih))
-        .fold((Vec::with_capacity(oh), Vec::with_capacity(oh), Vec::with_capacity(oh)), |mut acc, (a, b, w)| {
-            acc.0.push(a);
-            acc.1.push(b);
-            acc.2.push(w);
-            acc
-        });
-    let (x0s, x1s, wx): (Vec<usize>, Vec<usize>, Vec<f32>) = (0..ow)
-        .map(|ox| src_coord(ox, scale_x, iw))
-        .fold((Vec::with_capacity(ow), Vec::with_capacity(ow), Vec::with_capacity(ow)), |mut acc, (a, b, w)| {
-            acc.0.push(a);
-            acc.1.push(b);
-            acc.2.push(w);
-            acc
-        });
+    let (y0s, y1s, wy): (Vec<usize>, Vec<usize>, Vec<f32>) =
+        (0..oh).map(|oy| src_coord(oy, scale_y, ih)).fold(
+            (
+                Vec::with_capacity(oh),
+                Vec::with_capacity(oh),
+                Vec::with_capacity(oh),
+            ),
+            |mut acc, (a, b, w)| {
+                acc.0.push(a);
+                acc.1.push(b);
+                acc.2.push(w);
+                acc
+            },
+        );
+    let (x0s, x1s, wx): (Vec<usize>, Vec<usize>, Vec<f32>) =
+        (0..ow).map(|ox| src_coord(ox, scale_x, iw)).fold(
+            (
+                Vec::with_capacity(ow),
+                Vec::with_capacity(ow),
+                Vec::with_capacity(ow),
+            ),
+            |mut acc, (a, b, w)| {
+                acc.0.push(a);
+                acc.1.push(b);
+                acc.2.push(w);
+                acc
+            },
+        );
 
-    out.par_chunks_mut(oh * ow).enumerate().for_each(|(ch, out_plane)| {
-        let plane = &input[ch * ih * iw..(ch + 1) * ih * iw];
-        for oy in 0..oh {
-            let (y0, y1, fy) = (y0s[oy], y1s[oy], wy[oy]);
-            let row0 = &plane[y0 * iw..(y0 + 1) * iw];
-            let row1 = &plane[y1 * iw..(y1 + 1) * iw];
-            for ox in 0..ow {
-                let (x0, x1, fx) = (x0s[ox], x1s[ox], wx[ox]);
-                let top = row0[x0] * (1.0 - fx) + row0[x1] * fx;
-                let bot = row1[x0] * (1.0 - fx) + row1[x1] * fx;
-                out_plane[oy * ow + ox] = top * (1.0 - fy) + bot * fy;
+    out.par_chunks_mut(oh * ow)
+        .enumerate()
+        .for_each(|(ch, out_plane)| {
+            let plane = &input[ch * ih * iw..(ch + 1) * ih * iw];
+            for oy in 0..oh {
+                let (y0, y1, fy) = (y0s[oy], y1s[oy], wy[oy]);
+                let row0 = &plane[y0 * iw..(y0 + 1) * iw];
+                let row1 = &plane[y1 * iw..(y1 + 1) * iw];
+                for ox in 0..ow {
+                    let (x0, x1, fx) = (x0s[ox], x1s[ox], wx[ox]);
+                    let top = row0[x0] * (1.0 - fx) + row0[x1] * fx;
+                    let bot = row1[x0] * (1.0 - fx) + row1[x1] * fx;
+                    out_plane[oy * ow + ox] = top * (1.0 - fy) + bot * fy;
+                }
             }
-        }
-    });
+        });
 }
 
 /// Fuer eine Zielkoordinate `dst` entlang einer Achse mit `len_in` Quellelementen
@@ -63,7 +85,11 @@ fn src_coord(dst: usize, scale: f32, len_in: usize) -> (usize, usize, f32) {
     let idx0 = src_clamped.floor() as usize;
     let idx0 = idx0.min(len_in.saturating_sub(1));
     let idx1 = (idx0 + 1).min(len_in.saturating_sub(1));
-    let frac = if idx1 == idx0 { 0.0 } else { src_clamped - idx0 as f32 };
+    let frac = if idx1 == idx0 {
+        0.0
+    } else {
+        src_clamped - idx0 as f32
+    };
     let frac = frac.clamp(0.0, 1.0);
     (idx0, idx1, frac)
 }
@@ -72,7 +98,15 @@ fn src_coord(dst: usize, scale: f32, len_in: usize) -> (usize, usize, f32) {
 /// jedes Ausgabepixel direkt (ohne Vorab-Tabellen) die Quellkoordinate neu.
 /// Dient als zweite, redundante Implementierung zur Verifikation von
 /// [`bilinear_resize`].
-pub fn bilinear_resize_naive(input: &[f32], c: usize, ih: usize, iw: usize, oh: usize, ow: usize, out: &mut [f32]) {
+pub fn bilinear_resize_naive(
+    input: &[f32],
+    c: usize,
+    ih: usize,
+    iw: usize,
+    oh: usize,
+    ow: usize,
+    out: &mut [f32],
+) {
     debug_assert_eq!(input.len(), c * ih * iw);
     debug_assert_eq!(out.len(), c * oh * ow);
     if ih == 0 || iw == 0 || oh == 0 || ow == 0 {
@@ -85,12 +119,20 @@ pub fn bilinear_resize_naive(input: &[f32], c: usize, ih: usize, iw: usize, oh: 
             let sy = ((oy as f32 + 0.5) * scale_y - 0.5).max(0.0);
             let y0 = (sy.floor() as usize).min(ih - 1);
             let y1 = (y0 + 1).min(ih - 1);
-            let fy = if y1 == y0 { 0.0 } else { (sy - y0 as f32).clamp(0.0, 1.0) };
+            let fy = if y1 == y0 {
+                0.0
+            } else {
+                (sy - y0 as f32).clamp(0.0, 1.0)
+            };
             for ox in 0..ow {
                 let sx = ((ox as f32 + 0.5) * scale_x - 0.5).max(0.0);
                 let x0 = (sx.floor() as usize).min(iw - 1);
                 let x1 = (x0 + 1).min(iw - 1);
-                let fx = if x1 == x0 { 0.0 } else { (sx - x0 as f32).clamp(0.0, 1.0) };
+                let fx = if x1 == x0 {
+                    0.0
+                } else {
+                    (sx - x0 as f32).clamp(0.0, 1.0)
+                };
 
                 let get = |y: usize, x: usize| input[(ch * ih + y) * iw + x];
                 let top = get(y0, x0) * (1.0 - fx) + get(y0, x1) * fx;
@@ -155,37 +197,51 @@ pub fn bilinear_resize_align_corners(
         return;
     }
 
-    let (y0s, y1s, wy): (Vec<usize>, Vec<usize>, Vec<f32>) = (0..oh)
-        .map(|oy| src_coord_align_corners(oy, ih, oh))
-        .fold((Vec::with_capacity(oh), Vec::with_capacity(oh), Vec::with_capacity(oh)), |mut acc, (a, b, w)| {
-            acc.0.push(a);
-            acc.1.push(b);
-            acc.2.push(w);
-            acc
-        });
-    let (x0s, x1s, wx): (Vec<usize>, Vec<usize>, Vec<f32>) = (0..ow)
-        .map(|ox| src_coord_align_corners(ox, iw, ow))
-        .fold((Vec::with_capacity(ow), Vec::with_capacity(ow), Vec::with_capacity(ow)), |mut acc, (a, b, w)| {
-            acc.0.push(a);
-            acc.1.push(b);
-            acc.2.push(w);
-            acc
-        });
+    let (y0s, y1s, wy): (Vec<usize>, Vec<usize>, Vec<f32>) =
+        (0..oh).map(|oy| src_coord_align_corners(oy, ih, oh)).fold(
+            (
+                Vec::with_capacity(oh),
+                Vec::with_capacity(oh),
+                Vec::with_capacity(oh),
+            ),
+            |mut acc, (a, b, w)| {
+                acc.0.push(a);
+                acc.1.push(b);
+                acc.2.push(w);
+                acc
+            },
+        );
+    let (x0s, x1s, wx): (Vec<usize>, Vec<usize>, Vec<f32>) =
+        (0..ow).map(|ox| src_coord_align_corners(ox, iw, ow)).fold(
+            (
+                Vec::with_capacity(ow),
+                Vec::with_capacity(ow),
+                Vec::with_capacity(ow),
+            ),
+            |mut acc, (a, b, w)| {
+                acc.0.push(a);
+                acc.1.push(b);
+                acc.2.push(w);
+                acc
+            },
+        );
 
-    out.par_chunks_mut(oh * ow).enumerate().for_each(|(ch, out_plane)| {
-        let plane = &input[ch * ih * iw..(ch + 1) * ih * iw];
-        for oy in 0..oh {
-            let (y0, y1, fy) = (y0s[oy], y1s[oy], wy[oy]);
-            let row0 = &plane[y0 * iw..(y0 + 1) * iw];
-            let row1 = &plane[y1 * iw..(y1 + 1) * iw];
-            for ox in 0..ow {
-                let (x0, x1, fx) = (x0s[ox], x1s[ox], wx[ox]);
-                let top = row0[x0] * (1.0 - fx) + row0[x1] * fx;
-                let bot = row1[x0] * (1.0 - fx) + row1[x1] * fx;
-                out_plane[oy * ow + ox] = top * (1.0 - fy) + bot * fy;
+    out.par_chunks_mut(oh * ow)
+        .enumerate()
+        .for_each(|(ch, out_plane)| {
+            let plane = &input[ch * ih * iw..(ch + 1) * ih * iw];
+            for oy in 0..oh {
+                let (y0, y1, fy) = (y0s[oy], y1s[oy], wy[oy]);
+                let row0 = &plane[y0 * iw..(y0 + 1) * iw];
+                let row1 = &plane[y1 * iw..(y1 + 1) * iw];
+                for ox in 0..ow {
+                    let (x0, x1, fx) = (x0s[ox], x1s[ox], wx[ox]);
+                    let top = row0[x0] * (1.0 - fx) + row0[x1] * fx;
+                    let bot = row1[x0] * (1.0 - fx) + row1[x1] * fx;
+                    out_plane[oy * ow + ox] = top * (1.0 - fy) + bot * fy;
+                }
             }
-        }
-    });
+        });
 }
 
 #[cfg(test)]
@@ -221,7 +277,12 @@ mod tests {
             20.0,
         ];
         for i in 0..4 {
-            assert!((out[i] - expected[i]).abs() < 1e-6, "i={i} got={} want={}", out[i], expected[i]);
+            assert!(
+                (out[i] - expected[i]).abs() < 1e-6,
+                "i={i} got={} want={}",
+                out[i],
+                expected[i]
+            );
         }
     }
 
@@ -262,7 +323,12 @@ mod tests {
         bilinear_resize_naive(&input, c, ih, iw, oh, ow, &mut out_naive);
 
         for i in 0..out.len() {
-            assert!((out[i] - out_naive[i]).abs() < 1e-5, "i={i} fast={} naive={}", out[i], out_naive[i]);
+            assert!(
+                (out[i] - out_naive[i]).abs() < 1e-5,
+                "i={i} fast={} naive={}",
+                out[i],
+                out_naive[i]
+            );
         }
     }
 
@@ -301,15 +367,26 @@ mod tests {
         let input = vec![10.0, 20.0];
         let mut out = vec![0f32; 5];
         bilinear_resize_align_corners(&input, 1, 1, 2, 1, 5, &mut out);
-        assert_eq!(out[0], 10.0, "first output sample must equal first input sample exactly");
-        assert_eq!(out[4], 20.0, "last output sample must equal last input sample exactly");
+        assert_eq!(
+            out[0], 10.0,
+            "first output sample must equal first input sample exactly"
+        );
+        assert_eq!(
+            out[4], 20.0,
+            "last output sample must equal last input sample exactly"
+        );
         // Hand-computed intermediate points: src(dst) = dst*(2-1)/(5-1) = dst/4.
         // dst=1: src=0.25 -> 10*0.75+20*0.25=12.5
         // dst=2: src=0.5  -> 10*0.5 +20*0.5 =15.0
         // dst=3: src=0.75 -> 10*0.25+20*0.75=17.5
         let expected = [10.0, 12.5, 15.0, 17.5, 20.0];
         for i in 0..5 {
-            assert!((out[i] - expected[i]).abs() < 1e-6, "i={i} got={} want={}", out[i], expected[i]);
+            assert!(
+                (out[i] - expected[i]).abs() < 1e-6,
+                "i={i} got={} want={}",
+                out[i],
+                expected[i]
+            );
         }
     }
 
@@ -330,8 +407,14 @@ mod tests {
         bilinear_resize_align_corners(&input, c, ih, iw, oh, ow, &mut out_ac);
         bilinear_resize(&input, c, ih, iw, oh, ow, &mut out_hp);
 
-        let any_diff = out_ac.iter().zip(out_hp.iter()).any(|(a, b)| (a - b).abs() > 1e-4);
-        assert!(any_diff, "align_corners and half-pixel-centers must diverge on a non-trivial resize");
+        let any_diff = out_ac
+            .iter()
+            .zip(out_hp.iter())
+            .any(|(a, b)| (a - b).abs() > 1e-4);
+        assert!(
+            any_diff,
+            "align_corners and half-pixel-centers must diverge on a non-trivial resize"
+        );
     }
 
     #[test]
@@ -359,10 +442,18 @@ mod tests {
         bilinear_resize_align_corners(&input, c, ih, iw, oh, ow, &mut out);
 
         let sy = |dst: usize| -> f32 {
-            if oh <= 1 { 0.0 } else { dst as f32 * (ih - 1) as f32 / (oh - 1) as f32 }
+            if oh <= 1 {
+                0.0
+            } else {
+                dst as f32 * (ih - 1) as f32 / (oh - 1) as f32
+            }
         };
         let sx = |dst: usize| -> f32 {
-            if ow <= 1 { 0.0 } else { dst as f32 * (iw - 1) as f32 / (ow - 1) as f32 }
+            if ow <= 1 {
+                0.0
+            } else {
+                dst as f32 * (iw - 1) as f32 / (ow - 1) as f32
+            }
         };
         for ch in 0..c {
             for oy in 0..oh {
@@ -380,7 +471,10 @@ mod tests {
                     let bot = get(y1, x0) * (1.0 - fx) + get(y1, x1) * fx;
                     let want = top * (1.0 - fy) + bot * fy;
                     let got = out[(ch * oh + oy) * ow + ox];
-                    assert!((got - want).abs() < 1e-5, "ch={ch} oy={oy} ox={ox} got={got} want={want}");
+                    assert!(
+                        (got - want).abs() < 1e-5,
+                        "ch={ch} oy={oy} ox={ox} got={got} want={want}"
+                    );
                 }
             }
         }

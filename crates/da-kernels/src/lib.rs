@@ -18,25 +18,27 @@ pub use resample::{bilinear_resize, bilinear_resize_align_corners, bilinear_resi
 pub use rope::rope2d;
 
 pub fn qkv_f32_da3_base(
-    input: &[f32], weight: &[f32], bias: &[f32], q: &mut [f32], k: &mut [f32], v: &mut [f32],
+    input: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    q: &mut [f32],
+    k: &mut [f32],
+    v: &mut [f32],
 ) -> bool {
     da3_kernels::qkv_f32_da3_base(input, weight, bias, q, k, v)
 }
 
-pub fn linear_bias_scale_f32_da3_base(m: usize, n: usize, k: usize, a: &[f32], b: &[f32], bias: &[f32], scale: &[f32], c: &mut [f32]) -> bool {
-    da3_kernels::linear_bias_scale_f32_da3_base(m, n, k, a, b, bias, scale, c)
-}
-
-pub fn linear_bias_gelu_f32_da3_base(
+pub fn linear_bias_scale_f32_da3_base(
     m: usize,
     n: usize,
     k: usize,
     a: &[f32],
     b: &[f32],
     bias: &[f32],
+    scale: &[f32],
     c: &mut [f32],
 ) -> bool {
-    da3_kernels::linear_bias_gelu_f32_da3_base(m, n, k, a, b, bias, c)
+    da3_kernels::linear_bias_scale_f32_da3_base(m, n, k, a, b, bias, scale, c)
 }
 
 #[allow(clippy::too_many_arguments)]

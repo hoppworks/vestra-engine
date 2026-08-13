@@ -1,0 +1,563 @@
+{
+  "schema_version": 1,
+  "created_utc": "2026-08-13T05:02:20.287840+00:00",
+  "protocol": {
+    "trials": 10,
+    "repeat": 10,
+    "threads": 16,
+    "cooldown": 3.0,
+    "seed": 20260813,
+    "output": "/tmp/da3-cpu-f32-blis-20260813",
+    "cpu_f32_direct": true
+  },
+  "input": {
+    "path": "/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg",
+    "sha256": "936d60f43c51fe99156563a0d3c5da69cf84a39cbde5e443bea7662500b8c969"
+  },
+  "models": {
+    "f32": {
+      "path": "/var/roothome/da3-bench/models/depth-anything-base-f32.gguf",
+      "sha256": "1b13b166e8a8b4f2c862f42d36edb2f9aab995a18cc527a52b9f160b99c6b8da",
+      "bytes": 412110144
+    }
+  },
+  "software": {
+    "cpp_commit": "unavailable: Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).",
+    "ggml_commit": "unavailable: fatal: cannot change to '/var/roothome/da3-bench/third_party/ggml': No such file or directory",
+    "rust_commit": "unavailable: Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set)."
+  },
+  "hardware": {
+    "platform": "Linux-7.1.5-ogc5.1.fc44.x86_64-x86_64-with-glibc2.43",
+    "cpu": "AMD Ryzen 9 9950X 16-Core Processor",
+    "logical_cpus": 32,
+    "memory": "Mem:            91Gi        11Gi        64Gi       1.9Gi        22Gi        80Gi"
+  },
+  "arms": {
+    "cpp-f32-cpu": {
+      "suite": "cpu",
+      "precision": "f32",
+      "env": {},
+      "command": [
+        "/var/roothome/da3-bench/build/examples/cli/da3-cli",
+        "depth",
+        "--input",
+        "/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg",
+        "--threads",
+        "16",
+        "--repeat",
+        "10",
+        "--model",
+        "/var/roothome/da3-bench/models/depth-anything-base-f32.gguf"
+      ]
+    },
+    "rust-f32-cpu": {
+      "suite": "cpu",
+      "precision": "f32",
+      "env": {
+        "RAYON_NUM_THREADS": "16"
+      },
+      "command": [
+        "/var/roothome/da3-bench/depth-anything-rs/target/release/da",
+        "bench",
+        "--model",
+        "/var/roothome/da3-bench/models/depth-anything-base-f32.gguf",
+        "--image",
+        "/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg",
+        "--warmup",
+        "1",
+        "--repeat",
+        "10"
+      ]
+    }
+  },
+  "runs": [
+    {
+      "suite": "cpu",
+      "trial": 1,
+      "position": 1,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        180.581,
+        202.533,
+        201.44,
+        183.833,
+        184.462,
+        192.231,
+        196.513,
+        183.786,
+        173.147,
+        174.696
+      ],
+      "median_ms": 184.14749999999998,
+      "mean_ms": 187.3222,
+      "p95_ms": 202.533,
+      "rss_mb": 804.16015625,
+      "wall_s": 2.5982449054718018
+    },
+    {
+      "suite": "cpu",
+      "trial": 1,
+      "position": 2,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        238.995,
+        254.601,
+        230.999,
+        240.802,
+        243.694,
+        249.271,
+        235.834,
+        236.695,
+        246.826,
+        244.524
+      ],
+      "median_ms": 242.248,
+      "mean_ms": 242.2241,
+      "p95_ms": 254.601,
+      "rss_mb": 617.98828125,
+      "wall_s": 2.892738103866577
+    },
+    {
+      "suite": "cpu",
+      "trial": 2,
+      "position": 1,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        247.104,
+        236.308,
+        240.331,
+        247.038,
+        256.423,
+        240.844,
+        229.997,
+        237.971,
+        243.294,
+        240.452
+      ],
+      "median_ms": 240.648,
+      "mean_ms": 241.9762,
+      "p95_ms": 256.423,
+      "rss_mb": 618.5546875,
+      "wall_s": 2.8878347873687744
+    },
+    {
+      "suite": "cpu",
+      "trial": 2,
+      "position": 2,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        176.4,
+        172.73,
+        179.795,
+        177.84,
+        175.021,
+        186.833,
+        200.385,
+        186.237,
+        182.687,
+        171.518
+      ],
+      "median_ms": 178.8175,
+      "mean_ms": 180.94459999999998,
+      "p95_ms": 200.385,
+      "rss_mb": 803.87109375,
+      "wall_s": 2.506727933883667
+    },
+    {
+      "suite": "cpu",
+      "trial": 3,
+      "position": 1,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        238.334,
+        234.995,
+        232.111,
+        242.131,
+        240.44,
+        232.771,
+        234.848,
+        245.056,
+        236.041,
+        242.011
+      ],
+      "median_ms": 237.1875,
+      "mean_ms": 237.8738,
+      "p95_ms": 245.056,
+      "rss_mb": 618.56640625,
+      "wall_s": 2.828242778778076
+    },
+    {
+      "suite": "cpu",
+      "trial": 3,
+      "position": 2,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        194.873,
+        179.974,
+        189.409,
+        175.976,
+        172.414,
+        179.954,
+        182.257,
+        175.602,
+        181.272,
+        173.84
+      ],
+      "median_ms": 179.964,
+      "mean_ms": 180.5571,
+      "p95_ms": 194.873,
+      "rss_mb": 804.265625,
+      "wall_s": 2.504608392715454
+    },
+    {
+      "suite": "cpu",
+      "trial": 4,
+      "position": 1,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        179.043,
+        173.994,
+        196.928,
+        188.623,
+        203.525,
+        184.4,
+        197.301,
+        189.609,
+        173.486,
+        170.248
+      ],
+      "median_ms": 186.5115,
+      "mean_ms": 185.7157,
+      "p95_ms": 203.525,
+      "rss_mb": 803.9453125,
+      "wall_s": 2.5598015785217285
+    },
+    {
+      "suite": "cpu",
+      "trial": 4,
+      "position": 2,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        238.608,
+        231.701,
+        225.646,
+        236.601,
+        228.265,
+        234.692,
+        251.542,
+        242.892,
+        244.47,
+        237.292
+      ],
+      "median_ms": 236.94650000000001,
+      "mean_ms": 237.1709,
+      "p95_ms": 251.542,
+      "rss_mb": 617.8984375,
+      "wall_s": 2.8431808948516846
+    },
+    {
+      "suite": "cpu",
+      "trial": 5,
+      "position": 1,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        203.606,
+        201.677,
+        198.215,
+        204.388,
+        203.551,
+        196.298,
+        199.052,
+        196.703,
+        198.385,
+        195.554
+      ],
+      "median_ms": 198.7185,
+      "mean_ms": 199.74290000000002,
+      "p95_ms": 204.388,
+      "rss_mb": 803.80859375,
+      "wall_s": 2.6878273487091064
+    },
+    {
+      "suite": "cpu",
+      "trial": 5,
+      "position": 2,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        238.822,
+        252.966,
+        238.467,
+        242.867,
+        243.406,
+        239.372,
+        243.174,
+        237.759,
+        231.094,
+        251.777
+      ],
+      "median_ms": 241.11950000000002,
+      "mean_ms": 241.9704,
+      "p95_ms": 252.966,
+      "rss_mb": 616.96875,
+      "wall_s": 2.894674301147461
+    },
+    {
+      "suite": "cpu",
+      "trial": 6,
+      "position": 1,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        194.569,
+        201.383,
+        195.117,
+        201.273,
+        194.456,
+        197.456,
+        195.838,
+        183.17,
+        185.898,
+        196.893
+      ],
+      "median_ms": 195.4775,
+      "mean_ms": 194.6053,
+      "p95_ms": 201.383,
+      "rss_mb": 803.90625,
+      "wall_s": 2.6572515964508057
+    },
+    {
+      "suite": "cpu",
+      "trial": 6,
+      "position": 2,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        237.322,
+        243.662,
+        229.628,
+        239.928,
+        244.575,
+        230.862,
+        236.976,
+        241.941,
+        243.316,
+        236.179
+      ],
+      "median_ms": 238.625,
+      "mean_ms": 238.43890000000002,
+      "p95_ms": 244.575,
+      "rss_mb": 617.8828125,
+      "wall_s": 2.8680219650268555
+    },
+    {
+      "suite": "cpu",
+      "trial": 7,
+      "position": 1,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        199.537,
+        182.681,
+        202.138,
+        204.15,
+        194.53,
+        182.436,
+        184.008,
+        175.239,
+        181.964,
+        170.983
+      ],
+      "median_ms": 183.3445,
+      "mean_ms": 187.7666,
+      "p95_ms": 204.15,
+      "rss_mb": 804.078125,
+      "wall_s": 2.5758707523345947
+    },
+    {
+      "suite": "cpu",
+      "trial": 7,
+      "position": 2,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        242.631,
+        233.534,
+        233.508,
+        250.742,
+        239.33,
+        235.814,
+        230.554,
+        228.109,
+        239.997,
+        246.724
+      ],
+      "median_ms": 237.572,
+      "mean_ms": 238.09430000000003,
+      "p95_ms": 250.742,
+      "rss_mb": 618.22265625,
+      "wall_s": 2.8629844188690186
+    },
+    {
+      "suite": "cpu",
+      "trial": 8,
+      "position": 1,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        243.744,
+        240.266,
+        240.91,
+        245.037,
+        231.05,
+        240.789,
+        234.095,
+        246.27,
+        232.634,
+        247.629
+      ],
+      "median_ms": 240.84949999999998,
+      "mean_ms": 240.2424,
+      "p95_ms": 247.629,
+      "rss_mb": 617.84765625,
+      "wall_s": 2.867250442504883
+    },
+    {
+      "suite": "cpu",
+      "trial": 8,
+      "position": 2,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        179.892,
+        178.781,
+        202.01,
+        188.274,
+        199.923,
+        200.627,
+        199.521,
+        201.281,
+        199.221,
+        195.744
+      ],
+      "median_ms": 199.37099999999998,
+      "mean_ms": 194.5274,
+      "p95_ms": 202.01,
+      "rss_mb": 804.203125,
+      "wall_s": 2.6532986164093018
+    },
+    {
+      "suite": "cpu",
+      "trial": 9,
+      "position": 1,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        192.777,
+        172.931,
+        172.592,
+        172.832,
+        173.004,
+        178.348,
+        198.529,
+        176.193,
+        174.333,
+        194.029
+      ],
+      "median_ms": 175.263,
+      "mean_ms": 180.5568,
+      "p95_ms": 198.529,
+      "rss_mb": 804.00390625,
+      "wall_s": 2.519787549972534
+    },
+    {
+      "suite": "cpu",
+      "trial": 9,
+      "position": 2,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        240.111,
+        236.97,
+        249.828,
+        249.893,
+        235.044,
+        236.668,
+        234.506,
+        234.899,
+        235.829,
+        242.317
+      ],
+      "median_ms": 236.81900000000002,
+      "mean_ms": 239.6065,
+      "p95_ms": 249.893,
+      "rss_mb": 618.00390625,
+      "wall_s": 2.8791563510894775
+    },
+    {
+      "suite": "cpu",
+      "trial": 10,
+      "position": 1,
+      "arm": "cpp-f32-cpu",
+      "samples_ms": [
+        231.251,
+        235.897,
+        228.405,
+        229.778,
+        258.869,
+        245.672,
+        239.463,
+        244.199,
+        236.249,
+        235.195
+      ],
+      "median_ms": 236.07299999999998,
+      "mean_ms": 238.4978,
+      "p95_ms": 258.869,
+      "rss_mb": 617.4296875,
+      "wall_s": 2.8582632541656494
+    },
+    {
+      "suite": "cpu",
+      "trial": 10,
+      "position": 2,
+      "arm": "rust-f32-cpu",
+      "samples_ms": [
+        176.319,
+        173.97,
+        188.467,
+        176.152,
+        200.423,
+        199.618,
+        199.79,
+        200.636,
+        199.165,
+        197.712
+      ],
+      "median_ms": 198.43849999999998,
+      "mean_ms": 191.2252,
+      "p95_ms": 200.636,
+      "rss_mb": 803.9296875,
+      "wall_s": 2.613266944885254
+    }
+  ],
+  "summary": {
+    "cpp-f32-cpu": {
+      "trials": 10,
+      "samples": 100,
+      "trial_median_mean_ms": 238.80880000000002,
+      "trial_median_median_ms": 238.0985,
+      "trial_median_sd_ms": 2.20652269419555,
+      "mean_95ci_ms": [
+        237.23045841502847,
+        240.38714158497157
+      ],
+      "all_samples_p95_ms": 251.542,
+      "rss_mean_mb": 617.936328125
+    },
+    "rust-f32-cpu": {
+      "trials": 10,
+      "samples": 100,
+      "trial_median_mean_ms": 188.00535,
+      "trial_median_median_ms": 185.3295,
+      "trial_median_sd_ms": 9.182826516716464,
+      "mean_95ci_ms": [
+        181.43680801444057,
+        194.5738919855594
+      ],
+      "all_samples_p95_ms": 202.533,
+      "rss_mean_mb": 804.0171875
+    }
+  }
+}

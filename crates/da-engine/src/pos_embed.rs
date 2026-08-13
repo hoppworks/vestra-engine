@@ -78,12 +78,20 @@ fn cubic(x: f32) -> f32 {
 /// `POS_EMBED_WEIGHT`. Panics if the length isn't consistent with a perfect
 /// square (a corrupt/mismatched weight tensor).
 fn infer_grid(pos_embed_len: usize, embed: usize) -> usize {
-    assert_eq!(pos_embed_len % embed, 0, "pos_embed length not a multiple of embed_dim");
+    assert_eq!(
+        pos_embed_len % embed,
+        0,
+        "pos_embed length not a multiple of embed_dim"
+    );
     let rows = pos_embed_len / embed;
     assert!(rows >= 1, "pos_embed must have at least the CLS row");
     let patch_rows = rows - 1;
     let m = (patch_rows as f64).sqrt().round() as usize;
-    assert_eq!(m * m, patch_rows, "pos_embed patch-row count {patch_rows} is not a perfect square");
+    assert_eq!(
+        m * m,
+        patch_rows,
+        "pos_embed patch-row count {patch_rows} is not a perfect square"
+    );
     m
 }
 
@@ -102,7 +110,14 @@ fn infer_grid(pos_embed_len: usize, embed: usize) -> usize {
 /// The math itself is transcribed from the C++ source, not reverse-engineered
 /// from expected output, so confidence is reasonably high, but it is
 /// UNVERIFIED end-to-end.
-fn interpolate_pos_embed(pos_embed: &[f32], grid: usize, embed: usize, gh: usize, gw: usize, interp_offset: f32) -> Vec<f32> {
+fn interpolate_pos_embed(
+    pos_embed: &[f32],
+    grid: usize,
+    embed: usize,
+    gh: usize,
+    gw: usize,
+    interp_offset: f32,
+) -> Vec<f32> {
     assert_eq!(pos_embed.len(), (grid * grid + 1) * embed);
 
     let src = |r: usize, c: usize, ch: usize| -> f32 {
@@ -162,7 +177,9 @@ pub struct PosEmbedCache {
 
 impl PosEmbedCache {
     pub fn new() -> Self {
-        PosEmbedCache { by_resolution: HashMap::new() }
+        PosEmbedCache {
+            by_resolution: HashMap::new(),
+        }
     }
 
     /// Returns the cached (or freshly-built-and-cached) interpolated pos-embed
@@ -170,7 +187,13 @@ impl PosEmbedCache {
     /// bicubically interpolates `weights`'s `POS_EMBED_WEIGHT` tensor to this
     /// resolution and stores the result; on a hit, returns the stored value
     /// without recomputing.
-    pub fn get_or_build(&mut self, h: usize, w: usize, cfg: &ModelConfig, weights: &Weights) -> &[f32] {
+    pub fn get_or_build(
+        &mut self,
+        h: usize,
+        w: usize,
+        cfg: &ModelConfig,
+        weights: &Weights,
+    ) -> &[f32] {
         self.by_resolution
             .entry((h, w))
             .or_insert_with(|| {
@@ -219,7 +242,11 @@ pub fn prepare_tokens(
     let cls = weights
         .get_f32(CLS_TOKEN_WEIGHT)
         .unwrap_or_else(|| panic!("missing weight tensor {CLS_TOKEN_WEIGHT:?}"));
-    assert_eq!(cls.len(), embed, "{CLS_TOKEN_WEIGHT} shape mismatch: expected embed_dim");
+    assert_eq!(
+        cls.len(),
+        embed,
+        "{CLS_TOKEN_WEIGHT} shape mismatch: expected embed_dim"
+    );
 
     let register_tokens = weights.get_f32(REGISTER_TOKENS_WEIGHT);
     let n_register = register_tokens.map_or(0, |rt| {
@@ -329,7 +356,11 @@ mod tests {
         // content (self-consistency of the cache, not ground truth).
         let second: Vec<f32> = cache.get_or_build(4, 4, &cfg, &weights).to_vec();
         assert_eq!(first, second);
-        assert_eq!(cache.by_resolution.len(), 1, "same-resolution calls must not create a second cache entry");
+        assert_eq!(
+            cache.by_resolution.len(),
+            1,
+            "same-resolution calls must not create a second cache entry"
+        );
     }
 
     #[test]

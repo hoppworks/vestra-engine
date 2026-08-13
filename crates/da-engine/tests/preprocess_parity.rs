@@ -33,7 +33,11 @@ fn preprocess_matches_reference_input_image() {
         [1, hh, ww, 3] => (*hh as usize, *ww as usize),
         other => panic!("unexpected raw_image shape: {other:?}"),
     };
-    let raw_u8: Vec<u8> = raw.data.iter().map(|&v| v.round().clamp(0.0, 255.0) as u8).collect();
+    let raw_u8: Vec<u8> = raw
+        .data
+        .iter()
+        .map(|&v| v.round().clamp(0.0, 255.0) as u8)
+        .collect();
 
     // ModelConfig fields relevant to preprocess; image_size and mean/std are
     // read from the same dump's manifest-adjacent metadata where available,

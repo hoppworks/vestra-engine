@@ -56,7 +56,11 @@ pub fn uv_pos_embed(pw: usize, ph: usize, c: usize, aspect: f32, omega0: f32) ->
     if pw == 0 || ph == 0 || c == 0 {
         return out;
     }
-    assert_eq!(c % 4, 0, "uv_pos_embed: c={c} must be a multiple of 4 (D=c/2, F=D/2)");
+    assert_eq!(
+        c % 4,
+        0,
+        "uv_pos_embed: c={c} must be a multiple of 4 (D=c/2, F=D/2)"
+    );
 
     let diag = ((aspect * aspect + 1.0) as f64).sqrt();
     let span_x = aspect as f64 / diag;
@@ -82,7 +86,9 @@ pub fn uv_pos_embed(pw: usize, ph: usize, c: usize, aspect: f32, omega0: f32) ->
     let d = c / 2;
     let f = d / 2;
     let omega0 = omega0 as f64;
-    let omega: Vec<f64> = (0..f).map(|j| 1.0 / omega0.powf(j as f64 / f as f64)).collect();
+    let omega: Vec<f64> = (0..f)
+        .map(|j| 1.0 / omega0.powf(j as f64 / f as f64))
+        .collect();
 
     for y in 0..ph {
         for x in 0..pw {
@@ -149,7 +155,9 @@ pub struct UvEmbedCache {
 
 impl UvEmbedCache {
     pub fn new() -> Self {
-        UvEmbedCache { by_key: HashMap::new() }
+        UvEmbedCache {
+            by_key: HashMap::new(),
+        }
     }
 
     /// Returns the cached (or freshly-built-and-cached) `[dim, h, w]` CHW UV
@@ -168,9 +176,18 @@ impl UvEmbedCache {
     /// ph)` but must still use the full target image's pixel aspect ratio
     /// (see [`build_uv_embed_chw`]'s doc comment for why this distinction
     /// matters).
-    pub fn get_or_build_with_aspect(&mut self, h: usize, w: usize, dim: usize, aspect: f32) -> &[f32] {
+    pub fn get_or_build_with_aspect(
+        &mut self,
+        h: usize,
+        w: usize,
+        dim: usize,
+        aspect: f32,
+    ) -> &[f32] {
         let key = (h, w, dim, aspect.to_bits());
-        self.by_key.entry(key).or_insert_with(|| build_uv_embed_chw(h, w, dim, aspect)).as_slice()
+        self.by_key
+            .entry(key)
+            .or_insert_with(|| build_uv_embed_chw(h, w, dim, aspect))
+            .as_slice()
     }
 }
 
@@ -208,9 +225,21 @@ mod tests {
         let d = c / 2;
         let f = d / 2;
         for j in 0..f {
-            assert!(out[mid + j].abs() < 1e-6, "sin(x) at center should be ~0, got {}", out[mid + j]);
-            assert!((out[mid + f + j] - 1.0).abs() < 1e-6, "cos(x) at center should be ~1, got {}", out[mid + f + j]);
-            assert!(out[mid + d + j].abs() < 1e-6, "sin(y) at center should be ~0, got {}", out[mid + d + j]);
+            assert!(
+                out[mid + j].abs() < 1e-6,
+                "sin(x) at center should be ~0, got {}",
+                out[mid + j]
+            );
+            assert!(
+                (out[mid + f + j] - 1.0).abs() < 1e-6,
+                "cos(x) at center should be ~1, got {}",
+                out[mid + f + j]
+            );
+            assert!(
+                out[mid + d + j].abs() < 1e-6,
+                "sin(y) at center should be ~0, got {}",
+                out[mid + d + j]
+            );
             assert!(
                 (out[mid + d + f + j] - 1.0).abs() < 1e-6,
                 "cos(y) at center should be ~1, got {}",
@@ -266,7 +295,11 @@ mod tests {
         let first: Vec<f32> = cache.get_or_build(4, 4, 8).to_vec();
         let second: Vec<f32> = cache.get_or_build(4, 4, 8).to_vec();
         assert_eq!(first, second);
-        assert_eq!(cache.by_key.len(), 1, "same-key calls must not create a second cache entry");
+        assert_eq!(
+            cache.by_key.len(),
+            1,
+            "same-key calls must not create a second cache entry"
+        );
     }
 
     #[test]
@@ -294,6 +327,10 @@ mod tests {
         let wide_image_aspect = cache.get_or_build_with_aspect(16, 16, 8, 2.0).to_vec();
         assert_eq!(square_grid_aspect.len(), wide_image_aspect.len());
         assert_ne!(square_grid_aspect, wide_image_aspect);
-        assert_eq!(cache.by_key.len(), 2, "different aspect at the same (h,w,dim) must be a distinct cache entry");
+        assert_eq!(
+            cache.by_key.len(),
+            2,
+            "different aspect at the same (h,w,dim) must be a distinct cache entry"
+        );
     }
 }

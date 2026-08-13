@@ -67,10 +67,17 @@ fn engine_matches_reference_depth_and_pose() {
     // already use.
     use da_parity::{assert_parity, Dumps};
 
-    let mut engine = Engine::load(&model, QuantPref::PreferF32).expect("Engine::load should succeed against a real model");
+    let mut engine = Engine::load(&model, QuantPref::PreferF32)
+        .expect("Engine::load should succeed against a real model");
 
-    let d = Dumps::open(&dumps, &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dumps/manifest.json")).unwrap();
-    let raw = d.reference("raw_image").expect("dumps must contain raw_image");
+    let d = Dumps::open(
+        &dumps,
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dumps/manifest.json"),
+    )
+    .unwrap();
+    let raw = d
+        .reference("raw_image")
+        .expect("dumps must contain raw_image");
     // raw_image is expected HWC u8-equivalent per the dump convention used
     // elsewhere in this crate's parity tests (f32 in [0,255] or [0,1] —
     // Task 20b's honesty note about `preprocess` vs `preprocess_real` scope
@@ -81,18 +88,48 @@ fn engine_matches_reference_depth_and_pose() {
         [3, hh, ww] => (*hh as usize, *ww as usize),
         other => panic!("unexpected raw_image shape: {other:?}"),
     };
-    let raw_u8: Vec<u8> = raw.data.iter().map(|&v| v.round().clamp(0.0, 255.0) as u8).collect();
+    let raw_u8: Vec<u8> = raw
+        .data
+        .iter()
+        .map(|&v| v.round().clamp(0.0, 255.0) as u8)
+        .collect();
 
-    let out = engine.infer(&raw_u8, h, w).expect("Engine::infer should succeed against a real model");
+    let out = engine
+        .infer(&raw_u8, h, w)
+        .expect("Engine::infer should succeed against a real model");
 
-    let expected_depth = d.reference("head_depth").expect("dumps must contain head_depth");
-    assert_parity(&out.depth, &expected_depth.data, d.atol(), d.rtol(), "head_depth");
+    let expected_depth = d
+        .reference("head_depth")
+        .expect("dumps must contain head_depth");
+    assert_parity(
+        &out.depth,
+        &expected_depth.data,
+        d.atol(),
+        d.rtol(),
+        "head_depth",
+    );
 
-    let expected_extrinsics = d.reference("extrinsics").expect("dumps must contain extrinsics");
-    assert_parity(&out.extrinsics, &expected_extrinsics.data, d.atol(), d.rtol(), "extrinsics");
+    let expected_extrinsics = d
+        .reference("extrinsics")
+        .expect("dumps must contain extrinsics");
+    assert_parity(
+        &out.extrinsics,
+        &expected_extrinsics.data,
+        d.atol(),
+        d.rtol(),
+        "extrinsics",
+    );
 
-    let expected_intrinsics = d.reference("intrinsics").expect("dumps must contain intrinsics");
-    assert_parity(&out.intrinsics, &expected_intrinsics.data, d.atol(), d.rtol(), "intrinsics");
+    let expected_intrinsics = d
+        .reference("intrinsics")
+        .expect("dumps must contain intrinsics");
+    assert_parity(
+        &out.intrinsics,
+        &expected_intrinsics.data,
+        d.atol(),
+        d.rtol(),
+        "intrinsics",
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -114,7 +151,13 @@ struct GgufBuilder {
 
 impl GgufBuilder {
     fn new() -> Self {
-        GgufBuilder { kv: Vec::new(), kv_count: 0, tensor_info: Vec::new(), tensor_count: 0, data: Vec::new() }
+        GgufBuilder {
+            kv: Vec::new(),
+            kv_count: 0,
+            tensor_info: Vec::new(),
+            tensor_count: 0,
+            data: Vec::new(),
+        }
     }
 
     fn write_gguf_string(buf: &mut Vec<u8>, s: &str) {
@@ -154,7 +197,8 @@ impl GgufBuilder {
         Self::write_gguf_string(&mut self.kv, key);
         self.kv.extend_from_slice(&9u32.to_le_bytes()); // vtype 9 = array
         self.kv.extend_from_slice(&6u32.to_le_bytes()); // elem type 6 = float32
-        self.kv.extend_from_slice(&(vals.len() as u64).to_le_bytes());
+        self.kv
+            .extend_from_slice(&(vals.len() as u64).to_le_bytes());
         for v in vals {
             self.kv.extend_from_slice(&v.to_le_bytes());
         }
@@ -165,7 +209,8 @@ impl GgufBuilder {
         Self::write_gguf_string(&mut self.kv, key);
         self.kv.extend_from_slice(&9u32.to_le_bytes()); // vtype 9 = array
         self.kv.extend_from_slice(&5u32.to_le_bytes()); // elem type 5 = int32
-        self.kv.extend_from_slice(&(vals.len() as u64).to_le_bytes());
+        self.kv
+            .extend_from_slice(&(vals.len() as u64).to_le_bytes());
         for v in vals {
             self.kv.extend_from_slice(&v.to_le_bytes());
         }
@@ -178,10 +223,12 @@ impl GgufBuilder {
     fn tensor_f32(&mut self, name: &str, values: &[f32]) {
         Self::write_gguf_string(&mut self.tensor_info, name);
         self.tensor_info.extend_from_slice(&1u32.to_le_bytes()); // n_dims = 1
-        self.tensor_info.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        self.tensor_info
+            .extend_from_slice(&(values.len() as u64).to_le_bytes());
         self.tensor_info.extend_from_slice(&0u32.to_le_bytes()); // dtype 0 = F32
-        // offset relative to data_start = current cumulative data length.
-        self.tensor_info.extend_from_slice(&(self.data.len() as u64).to_le_bytes());
+                                                                 // offset relative to data_start = current cumulative data length.
+        self.tensor_info
+            .extend_from_slice(&(self.data.len() as u64).to_le_bytes());
         for v in values {
             self.data.extend_from_slice(&v.to_le_bytes());
         }
@@ -294,7 +341,10 @@ fn build_synthetic_gguf() -> Vec<u8> {
     g.kv_u32("depthanything3.cam.dim_in", C_IN as u32);
 
     // ---- ViT backbone weights ----
-    g.tensor_f32("vit.patch_embed.weight", &rng.vec(EMBED * 3 * PATCH * PATCH));
+    g.tensor_f32(
+        "vit.patch_embed.weight",
+        &rng.vec(EMBED * 3 * PATCH * PATCH),
+    );
     g.tensor_f32("vit.patch_embed.bias", &rng.vec(EMBED));
     g.tensor_f32("vit.pos_embed", &rng.vec((GRID * GRID + 1) * EMBED));
     g.tensor_f32("vit.cls_token", &rng.vec(EMBED));
@@ -332,28 +382,64 @@ fn build_synthetic_gguf() -> Vec<u8> {
     g.tensor_f32("head.resize.3.bias", &rng.vec(OC[3]));
 
     for s in 0..4 {
-        g.tensor_f32(&format!("head.scratch.layer{}_rn.weight", s + 1), &rng.vec(FUSION_C * OC[s] * 3 * 3));
+        g.tensor_f32(
+            &format!("head.scratch.layer{}_rn.weight", s + 1),
+            &rng.vec(FUSION_C * OC[s] * 3 * 3),
+        );
     }
 
     for i in 1..=4 {
         if i != 4 {
             // rn4 has no lateral, so no rc1.
-            g.tensor_f32(&format!("head.scratch.rn{i}.rc1.c1.weight"), &rng.vec(FUSION_C * FUSION_C * 3 * 3));
-            g.tensor_f32(&format!("head.scratch.rn{i}.rc1.c1.bias"), &rng.vec(FUSION_C));
-            g.tensor_f32(&format!("head.scratch.rn{i}.rc1.c2.weight"), &rng.vec(FUSION_C * FUSION_C * 3 * 3));
-            g.tensor_f32(&format!("head.scratch.rn{i}.rc1.c2.bias"), &rng.vec(FUSION_C));
+            g.tensor_f32(
+                &format!("head.scratch.rn{i}.rc1.c1.weight"),
+                &rng.vec(FUSION_C * FUSION_C * 3 * 3),
+            );
+            g.tensor_f32(
+                &format!("head.scratch.rn{i}.rc1.c1.bias"),
+                &rng.vec(FUSION_C),
+            );
+            g.tensor_f32(
+                &format!("head.scratch.rn{i}.rc1.c2.weight"),
+                &rng.vec(FUSION_C * FUSION_C * 3 * 3),
+            );
+            g.tensor_f32(
+                &format!("head.scratch.rn{i}.rc1.c2.bias"),
+                &rng.vec(FUSION_C),
+            );
         }
-        g.tensor_f32(&format!("head.scratch.rn{i}.rc2.c1.weight"), &rng.vec(FUSION_C * FUSION_C * 3 * 3));
-        g.tensor_f32(&format!("head.scratch.rn{i}.rc2.c1.bias"), &rng.vec(FUSION_C));
-        g.tensor_f32(&format!("head.scratch.rn{i}.rc2.c2.weight"), &rng.vec(FUSION_C * FUSION_C * 3 * 3));
-        g.tensor_f32(&format!("head.scratch.rn{i}.rc2.c2.bias"), &rng.vec(FUSION_C));
-        g.tensor_f32(&format!("head.scratch.rn{i}.out.weight"), &rng.vec(FUSION_C * FUSION_C * 1 * 1));
+        g.tensor_f32(
+            &format!("head.scratch.rn{i}.rc2.c1.weight"),
+            &rng.vec(FUSION_C * FUSION_C * 3 * 3),
+        );
+        g.tensor_f32(
+            &format!("head.scratch.rn{i}.rc2.c1.bias"),
+            &rng.vec(FUSION_C),
+        );
+        g.tensor_f32(
+            &format!("head.scratch.rn{i}.rc2.c2.weight"),
+            &rng.vec(FUSION_C * FUSION_C * 3 * 3),
+        );
+        g.tensor_f32(
+            &format!("head.scratch.rn{i}.rc2.c2.bias"),
+            &rng.vec(FUSION_C),
+        );
+        g.tensor_f32(
+            &format!("head.scratch.rn{i}.out.weight"),
+            &rng.vec(FUSION_C * FUSION_C * 1 * 1),
+        );
         g.tensor_f32(&format!("head.scratch.rn{i}.out.bias"), &rng.vec(FUSION_C));
     }
 
-    g.tensor_f32("head.scratch.out1.weight", &rng.vec(FEAT_HALF * FUSION_C * 3 * 3));
+    g.tensor_f32(
+        "head.scratch.out1.weight",
+        &rng.vec(FEAT_HALF * FUSION_C * 3 * 3),
+    );
     g.tensor_f32("head.scratch.out1.bias", &rng.vec(FEAT_HALF));
-    g.tensor_f32("head.scratch.out2a.weight", &rng.vec(32 * FEAT_HALF * 3 * 3));
+    g.tensor_f32(
+        "head.scratch.out2a.weight",
+        &rng.vec(32 * FEAT_HALF * 3 * 3),
+    );
     g.tensor_f32("head.scratch.out2a.bias", &rng.vec(32));
     g.tensor_f32("head.scratch.out2b.weight", &rng.vec(OUTPUT_DIM * 32));
     g.tensor_f32("head.scratch.out2b.bias", &rng.vec(OUTPUT_DIM));
@@ -385,8 +471,12 @@ fn write_temp_gguf(bytes: &[u8]) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let path = std::env::temp_dir().join(format!("da_engine_e2e_synth_{pid}_{nanos}_{counter}.gguf"));
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path =
+        std::env::temp_dir().join(format!("da_engine_e2e_synth_{pid}_{nanos}_{counter}.gguf"));
     let mut f = std::fs::File::create(&path).expect("create temp synthetic gguf");
     f.write_all(bytes).expect("write temp synthetic gguf");
     path
@@ -409,10 +499,14 @@ fn engine_load_and_infer_run_to_completion_on_synthetic_gguf() {
     // builder bug from an `Engine`-side bug if this ever fails).
     {
         let f = GgufFile::open(&path).expect("synthetic gguf should parse as a valid GgufFile");
-        assert!(f.tensor_names().count() > 0, "synthetic gguf should have tensors");
+        assert!(
+            f.tensor_names().count() > 0,
+            "synthetic gguf should have tensors"
+        );
     }
 
-    let mut engine = Engine::load(&path, QuantPref::PreferF32).expect("Engine::load should succeed on a well-formed synthetic gguf");
+    let mut engine = Engine::load(&path, QuantPref::PreferF32)
+        .expect("Engine::load should succeed on a well-formed synthetic gguf");
 
     // 4x4 RGB image (matches the synthetic model's image_size=4), simple
     // deterministic gradient content (not all-zero, so patch_embed actually
@@ -428,22 +522,41 @@ fn engine_load_and_infer_run_to_completion_on_synthetic_gguf() {
         }
     }
 
-    let out = engine.infer(&raw, IMAGE_SIZE, IMAGE_SIZE).expect("Engine::infer should run to completion on synthetic weights");
+    let out = engine
+        .infer(&raw, IMAGE_SIZE, IMAGE_SIZE)
+        .expect("Engine::infer should run to completion on synthetic weights");
 
     // Shape assertions: this is what this test actually proves (see module
     // doc comment) — the facade produced output at the right resolution
     // with the right array shapes, not that the values are meaningful.
-    assert_eq!(out.h, IMAGE_SIZE, "InferOut.h should equal the preprocessed pixel height");
-    assert_eq!(out.w, IMAGE_SIZE, "InferOut.w should equal the preprocessed pixel width");
-    assert_eq!(out.depth.len(), IMAGE_SIZE * IMAGE_SIZE, "depth map should be h*w");
-    assert_eq!(out.conf.len(), IMAGE_SIZE * IMAGE_SIZE, "conf map should be h*w (output_dim=2 in this synthetic model)");
+    assert_eq!(
+        out.h, IMAGE_SIZE,
+        "InferOut.h should equal the preprocessed pixel height"
+    );
+    assert_eq!(
+        out.w, IMAGE_SIZE,
+        "InferOut.w should equal the preprocessed pixel width"
+    );
+    assert_eq!(
+        out.depth.len(),
+        IMAGE_SIZE * IMAGE_SIZE,
+        "depth map should be h*w"
+    );
+    assert_eq!(
+        out.conf.len(),
+        IMAGE_SIZE * IMAGE_SIZE,
+        "conf map should be h*w (output_dim=2 in this synthetic model)"
+    );
     assert_eq!(out.extrinsics.len(), 12);
     assert_eq!(out.intrinsics.len(), 9);
     // intrinsics[8] (bottom-right of the 3x3 row-major K matrix) is always
     // exactly 1.0 by construction in `pose.rs::decode` — a cheap, precise
     // sanity check that we actually reached the pose-decode step and it
     // populated real data, not a happens-to-be-zeroed buffer.
-    assert_eq!(out.intrinsics[8], 1.0, "K[2][2] must be exactly 1.0 per decode()'s construction");
+    assert_eq!(
+        out.intrinsics[8], 1.0,
+        "K[2][2] must be exactly 1.0 per decode()'s construction"
+    );
 
     let _ = std::fs::remove_file(&path);
 }

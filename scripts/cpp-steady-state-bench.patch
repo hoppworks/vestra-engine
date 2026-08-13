@@ -1,0 +1,45 @@
+diff --git a/examples/cli/main.cpp b/examples/cli/main.cpp
+--- a/examples/cli/main.cpp
++++ b/examples/cli/main.cpp
+@@ -74,9 +74,21 @@ static int cmd_depth_bench(const da::cli::Parsed& p){
+     if (!eng){ std::fprintf(stderr, "error: load failed\n"); return 1; }
+     const bool native = !p.legacy_resize;
+     const bool with_pose = !p.output_pose.empty();
++    da::Image image;
++    if (!da::load_image_rgb(p.input, image)) {
++        std::fprintf(stderr, "error: load image failed\n"); return 1;
++    }
+     std::vector<double> ms; ms.reserve(p.repeat);
+     std::vector<float> depth, conf; int H = 0, W = 0;
+     std::array<float,12> ext; std::array<float,9> intr;
++    // Match the Rust and PyTorch steady-state protocol: decode once, then run
++    // one untimed warm-up before collecting samples.
++    if (!with_pose) {
++        const bool warmup_ok = native
++            ? eng->depth_native_image(image, depth, conf, H, W)
++            : eng->depth_image(image, depth, conf, H, W);
++        if (!warmup_ok){ std::fprintf(stderr, "error: depth warmup failed\n"); return 1; }
++    }
+     for (int it = 0; it < p.repeat; ++it){
+         auto a = clk::now();
+         bool ok;
+@@ -84,8 +96,8 @@ static int cmd_depth_bench(const da::cli::Parsed& p){
+             ok = native ? eng->depth_pose_native_path(p.input, depth, conf, ext, intr, H, W)
+                         : eng->depth_pose_path(p.input, depth, conf, ext, intr, H, W);
+         } else {
+-            ok = native ? eng->depth_native(p.input, depth, conf, H, W)
+-                        : eng->depth(p.input, depth, conf, H, W);
++            ok = native ? eng->depth_native_image(image, depth, conf, H, W)
++                        : eng->depth_image(image, depth, conf, H, W);
+         }
+         auto b = clk::now();
+         if (!ok){ std::fprintf(stderr, "error: %s failed\n", with_pose ? "depth_pose" : "depth"); return 1; }
+@@ -96,6 +108,8 @@ static int cmd_depth_bench(const da::cli::Parsed& p){
+     double median = sorted[sorted.size()/2];
+     double p90 = sorted[(size_t)(sorted.size()*0.9) < sorted.size() ? (size_t)(sorted.size()*0.9) : sorted.size()-1];
+     double minv = sorted.front(), maxv = sorted.back();
++    for (size_t i = 0; i < ms.size(); ++i)
++        std::printf("iter[%zu]_ms=%.3f\n", i, ms[i]);
+     std::printf("bench: out=%dx%d threads=%d load=%.1fms infer=%.1fms/iter "
+                 "(median over %d, min=%.1f max=%.1f p90=%.1f)\n",
+                 W, H, p.n_threads > 0 ? p.n_threads : 1, load_ms, median, p.repeat,

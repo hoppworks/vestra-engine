@@ -67,7 +67,11 @@ fn write_depth(path: &Path, out: &InferOut) -> Result<(), Box<dyn Error>> {
 /// spec), followed by raw native-endian `f32` scanlines in PFM's canonical
 /// bottom-to-top row order (row 0 of the file is the LAST row of `depth`).
 pub fn write_pfm(path: &Path, depth: &[f32], w: usize, h: usize) -> std::io::Result<()> {
-    assert_eq!(depth.len(), w * h, "depth buffer must be exactly w*h elements");
+    assert_eq!(
+        depth.len(),
+        w * h,
+        "depth buffer must be exactly w*h elements"
+    );
     let mut f = BufWriter::new(File::create(path)?);
     write!(f, "Pf\n{w} {h}\n-1.0\n")?;
     for row in (0..h).rev() {
@@ -90,12 +94,33 @@ pub fn write_pfm(path: &Path, depth: &[f32], w: usize, h: usize) -> std::io::Res
 /// only option available from this crate without widening that API. This is
 /// a visualization aid, not a precision-preserving format — use `.pfm` for
 /// exact float data.
-pub fn write_depth_png(path: &Path, depth: &[f32], w: usize, h: usize) -> Result<(), Box<dyn Error>> {
-    assert_eq!(depth.len(), w * h, "depth buffer must be exactly w*h elements");
-    let (min, max) = depth.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(mn, mx), &v| (mn.min(v), mx.max(v)));
-    let range = if (max - min).abs() > f32::EPSILON { max - min } else { 1.0 };
-    let pixels: Vec<u8> = depth.iter().map(|&v| (((v - min) / range) * 255.0).round().clamp(0.0, 255.0) as u8).collect();
-    let img = image::GrayImage::from_raw(w as u32, h as u32, pixels).ok_or("depth buffer size mismatch building GrayImage")?;
+pub fn write_depth_png(
+    path: &Path,
+    depth: &[f32],
+    w: usize,
+    h: usize,
+) -> Result<(), Box<dyn Error>> {
+    assert_eq!(
+        depth.len(),
+        w * h,
+        "depth buffer must be exactly w*h elements"
+    );
+    let (min, max) = depth
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(mn, mx), &v| {
+            (mn.min(v), mx.max(v))
+        });
+    let range = if (max - min).abs() > f32::EPSILON {
+        max - min
+    } else {
+        1.0
+    };
+    let pixels: Vec<u8> = depth
+        .iter()
+        .map(|&v| (((v - min) / range) * 255.0).round().clamp(0.0, 255.0) as u8)
+        .collect();
+    let img = image::GrayImage::from_raw(w as u32, h as u32, pixels)
+        .ok_or("depth buffer size mismatch building GrayImage")?;
     img.save(path)?;
     Ok(())
 }
@@ -104,7 +129,11 @@ pub fn write_depth_png(path: &Path, depth: &[f32], w: usize, h: usize) -> Result
 /// `[[..]]` JSON arrays (extrinsics: 3 rows x 4 cols; intrinsics: 3 rows x 3
 /// cols) and writes `{ "extrinsics": [...], "intrinsics": [...] }` to
 /// `path`.
-pub fn write_pose_json(path: &Path, extrinsics: &[f32; 12], intrinsics: &[f32; 9]) -> Result<(), Box<dyn Error>> {
+pub fn write_pose_json(
+    path: &Path,
+    extrinsics: &[f32; 12],
+    intrinsics: &[f32; 9],
+) -> Result<(), Box<dyn Error>> {
     let value = pose_json_value(extrinsics, intrinsics);
     let mut f = BufWriter::new(File::create(path)?);
     serde_json::to_writer_pretty(&mut f, &value)?;
@@ -137,7 +166,10 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         std::env::temp_dir().join(format!("da_cli_test_{pid}_{nanos}_{counter}{suffix}"))
     }
 
@@ -159,7 +191,11 @@ mod tests {
         File::open(&path).unwrap().read_to_end(&mut bytes).unwrap();
 
         let header = "Pf\n3 2\n-1.0\n";
-        assert!(bytes.starts_with(header.as_bytes()), "PFM header mismatch: {:?}", String::from_utf8_lossy(&bytes[..header.len().min(bytes.len())]));
+        assert!(
+            bytes.starts_with(header.as_bytes()),
+            "PFM header mismatch: {:?}",
+            String::from_utf8_lossy(&bytes[..header.len().min(bytes.len())])
+        );
 
         let data = &bytes[header.len()..];
         assert_eq!(data.len(), w * h * 4, "PFM data section should be w*h f32s");
@@ -187,7 +223,10 @@ mod tests {
         File::open(&path).unwrap().read_to_end(&mut bytes).unwrap();
         let header = "Pf\n4 1\n-1.0\n";
         let data = &bytes[header.len()..];
-        let floats: Vec<f32> = data.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        let floats: Vec<f32> = data
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
         assert_eq!(floats, depth);
 
         let _ = std::fs::remove_file(&path);
@@ -200,24 +239,38 @@ mod tests {
     #[test]
     fn pose_json_value_reshapes_flat_arrays_into_nested_rows() {
         let extrinsics: [f32; 12] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0];
-        let intrinsics: [f32; 9] = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0];
+        let intrinsics: [f32; 9] = [
+            100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0,
+        ];
 
         let value = pose_json_value(&extrinsics, &intrinsics);
         let s = serde_json::to_string(&value).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
 
-        let ext = parsed["extrinsics"].as_array().expect("extrinsics should be an array");
+        let ext = parsed["extrinsics"]
+            .as_array()
+            .expect("extrinsics should be an array");
         assert_eq!(ext.len(), 3, "extrinsics should reshape into 3 rows");
         for row in ext {
-            assert_eq!(row.as_array().unwrap().len(), 4, "each extrinsics row should have 4 cols");
+            assert_eq!(
+                row.as_array().unwrap().len(),
+                4,
+                "each extrinsics row should have 4 cols"
+            );
         }
         assert_eq!(ext[0][0].as_f64().unwrap(), 0.0);
         assert_eq!(ext[2][3].as_f64().unwrap(), 11.0);
 
-        let int_ = parsed["intrinsics"].as_array().expect("intrinsics should be an array");
+        let int_ = parsed["intrinsics"]
+            .as_array()
+            .expect("intrinsics should be an array");
         assert_eq!(int_.len(), 3, "intrinsics should reshape into 3 rows");
         for row in int_ {
-            assert_eq!(row.as_array().unwrap().len(), 3, "each intrinsics row should have 3 cols");
+            assert_eq!(
+                row.as_array().unwrap().len(),
+                3,
+                "each intrinsics row should have 3 cols"
+            );
         }
         assert_eq!(int_[0][0].as_f64().unwrap(), 100.0);
         assert_eq!(int_[2][2].as_f64().unwrap(), 108.0);
@@ -232,7 +285,8 @@ mod tests {
         write_pose_json(&path, &extrinsics, &intrinsics).expect("write_pose_json should succeed");
 
         let contents = std::fs::read_to_string(&path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&contents).expect("output should be valid JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&contents).expect("output should be valid JSON");
         let expected = pose_json_value(&extrinsics, &intrinsics);
         assert_eq!(parsed, expected);
 
@@ -253,7 +307,9 @@ mod tests {
 
         write_depth_png(&path, &depth, w, h).expect("write_depth_png should succeed");
 
-        let img = image::open(&path).expect("output should be a decodable image").to_luma8();
+        let img = image::open(&path)
+            .expect("output should be a decodable image")
+            .to_luma8();
         assert_eq!(img.width() as usize, w);
         assert_eq!(img.height() as usize, h);
         // min (0.0, at x=0,y=0) -> 0; max (10.0, at x=0,y=1) -> 255

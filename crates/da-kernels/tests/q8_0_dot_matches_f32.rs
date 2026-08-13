@@ -12,7 +12,10 @@ fn quantize_matrix(x: &[f32], rows: usize, k: usize) -> Vec<BlockQ8_0> {
     ];
     for r in 0..rows {
         let blocks_per_row = k / QK8_0;
-        quantize_row_q8_0(&x[r * k..(r + 1) * k], &mut out[r * blocks_per_row..(r + 1) * blocks_per_row]);
+        quantize_row_q8_0(
+            &x[r * k..(r + 1) * k],
+            &mut out[r * blocks_per_row..(r + 1) * blocks_per_row],
+        );
     }
     out
 }

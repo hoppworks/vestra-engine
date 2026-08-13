@@ -320,7 +320,12 @@ impl GraphBuilder {
     }
 
     pub fn add_bias(&mut self, x: TensorId, bias: TensorId, rows: usize, cols: usize) -> TensorId {
-        self.ops.push(Op::AddBias { x, bias, rows, cols });
+        self.ops.push(Op::AddBias {
+            x,
+            bias,
+            rows,
+            cols,
+        });
         x
     }
 
@@ -349,8 +354,19 @@ impl GraphBuilder {
         x
     }
 
-    pub fn layer_scale(&mut self, x: TensorId, gamma: TensorId, rows: usize, cols: usize) -> TensorId {
-        self.ops.push(Op::LayerScale { x, gamma, rows, cols });
+    pub fn layer_scale(
+        &mut self,
+        x: TensorId,
+        gamma: TensorId,
+        rows: usize,
+        cols: usize,
+    ) -> TensorId {
+        self.ops.push(Op::LayerScale {
+            x,
+            gamma,
+            rows,
+            cols,
+        });
         x
     }
 
@@ -490,11 +506,18 @@ impl Weights {
         self.f32.get(name).map(|v| v.as_slice())
     }
 
-    pub fn insert_q8_0(&mut self, name: impl Into<String>, blocks: Vec<da_gguf::BlockQ8_0>, shape: Vec<i64>) {
+    pub fn insert_q8_0(
+        &mut self,
+        name: impl Into<String>,
+        blocks: Vec<da_gguf::BlockQ8_0>,
+        shape: Vec<i64>,
+    ) {
         self.q8_0.insert(name.into(), (blocks, shape));
     }
 
     pub fn get_q8_0(&self, name: &str) -> Option<(&[da_gguf::BlockQ8_0], &[i64])> {
-        self.q8_0.get(name).map(|(b, s)| (b.as_slice(), s.as_slice()))
+        self.q8_0
+            .get(name)
+            .map(|(b, s)| (b.as_slice(), s.as_slice()))
     }
 }

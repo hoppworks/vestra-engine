@@ -38,6 +38,23 @@ impl Gemm for FaerGemm {
     }
 }
 
+/// Optional bridge to the experimental BLIS build in `da3-kernels`.
+///
+/// The DPT head invokes its GEMMs serially, so one BLIS 16-thread team does
+/// not nest inside another Rayon/Faer operation. Unsupported builds and
+/// shapes retain Faer exactly, making this a reversible A/B candidate.
+pub struct BlisOrFaerGemm;
+impl Gemm for BlisOrFaerGemm {
+    fn gemm(&self, m: usize, n: usize, k: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
+        if std::env::var_os("DA3_HEAD_BLIS_GEMM").is_some()
+            && da3_kernels::blis_gemm_f32(m, n, k, a, b, c)
+        {
+            return;
+        }
+        FaerGemm.gemm(m, n, k, a, b, c);
+    }
+}
+
 /// Narrow DA3 transformer projection dispatcher. Only the fixed BASE shapes
 /// can reach the external AVX-512 candidate; every other operation uses Faer.
 pub struct Da3ProjectionGemm;

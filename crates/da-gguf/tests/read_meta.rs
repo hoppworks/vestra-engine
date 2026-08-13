@@ -14,7 +14,10 @@ fn model() -> Option<GgufFile> {
 #[test]
 fn reads_arch_and_vit_dims() {
     let Some(m) = model() else { return };
-    assert_eq!(m.meta_str("depthanything3.arch").as_deref(), Some("depthanything3"));
+    assert_eq!(
+        m.meta_str("depthanything3.arch").as_deref(),
+        Some("depthanything3")
+    );
     assert!(m.meta_u32("depthanything3.vit.embed_dim").unwrap() >= 384);
     assert!(m.meta_u32("depthanything3.vit.depth").unwrap() >= 12);
 }

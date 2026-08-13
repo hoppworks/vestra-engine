@@ -1,22 +1,37 @@
-use std::path::Path;
-use memmap2::Mmap;
-use half::f16;
 use crate::meta::MetaValue;
 use crate::q8_0::{self, TensorQ8_0, QK8_0};
+use half::f16;
+use memmap2::Mmap;
+use std::path::Path;
 
 #[derive(thiserror::Error, Debug)]
 pub enum GgufError {
-    #[error("io: {0}")] Io(#[from] std::io::Error),
-    #[error("bad magic")] BadMagic,
-    #[error("unsupported gguf version {0}")] UnsupportedVersion(u32),
-    #[error("tensor not found: {0}")] TensorNotFound(String),
-    #[error("unsupported dtype {0}")] UnsupportedDtype(u32),
-    #[error("malformed: {0}")] Malformed(String),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("bad magic")]
+    BadMagic,
+    #[error("unsupported gguf version {0}")]
+    UnsupportedVersion(u32),
+    #[error("tensor not found: {0}")]
+    TensorNotFound(String),
+    #[error("unsupported dtype {0}")]
+    UnsupportedDtype(u32),
+    #[error("malformed: {0}")]
+    Malformed(String),
 }
 
-pub struct TensorF32 { pub name: String, pub shape: Vec<i64>, pub data: Vec<f32> }
+pub struct TensorF32 {
+    pub name: String,
+    pub shape: Vec<i64>,
+    pub data: Vec<f32>,
+}
 
-pub struct TensorInfo { pub name: String, dims: Vec<u64>, dtype: u32, offset: u64 }
+pub struct TensorInfo {
+    pub name: String,
+    dims: Vec<u64>,
+    dtype: u32,
+    offset: u64,
+}
 
 pub struct GgufFile {
     _mmap: Mmap,
@@ -30,14 +45,29 @@ const GGML_F32: u32 = 0;
 const GGML_F16: u32 = 1;
 const GGML_Q8_0: u32 = 8;
 
-struct Cursor<'a> { b: &'a [u8], p: usize }
+struct Cursor<'a> {
+    b: &'a [u8],
+    p: usize,
+}
 impl<'a> Cursor<'a> {
-    fn u32(&mut self) -> Result<u32, GgufError> { let v = u32::from_le_bytes(self.take(4)?.try_into().unwrap()); Ok(v) }
-    fn u64(&mut self) -> Result<u64, GgufError> { let v = u64::from_le_bytes(self.take(8)?.try_into().unwrap()); Ok(v) }
-    fn i32(&mut self) -> Result<i32, GgufError> { Ok(self.u32()? as i32) }
+    fn u32(&mut self) -> Result<u32, GgufError> {
+        let v = u32::from_le_bytes(self.take(4)?.try_into().unwrap());
+        Ok(v)
+    }
+    fn u64(&mut self) -> Result<u64, GgufError> {
+        let v = u64::from_le_bytes(self.take(8)?.try_into().unwrap());
+        Ok(v)
+    }
+    fn i32(&mut self) -> Result<i32, GgufError> {
+        Ok(self.u32()? as i32)
+    }
     fn take(&mut self, n: usize) -> Result<&'a [u8], GgufError> {
-        if self.p + n > self.b.len() { return Err(GgufError::Malformed("eof".into())); }
-        let s = &self.b[self.p..self.p + n]; self.p += n; Ok(s)
+        if self.p + n > self.b.len() {
+            return Err(GgufError::Malformed("eof".into()));
+        }
+        let s = &self.b[self.p..self.p + n];
+        self.p += n;
+        Ok(s)
     }
     fn gguf_string(&mut self) -> Result<String, GgufError> {
         let n = self.u64()? as usize;
@@ -50,60 +80,76 @@ impl<'a> Cursor<'a> {
 // Returns Ok(Some(value)) for supported types, Ok(None) for unsupported but skipped types.
 fn read_kv_value(c: &mut Cursor, vtype: u32) -> Result<Option<MetaValue>, GgufError> {
     match vtype {
-        0 => {  // uint8
+        0 => {
+            // uint8
             let v = c.take(1)?[0] as u32;
             Ok(Some(MetaValue::U32(v)))
         }
-        1 => {  // int8
+        1 => {
+            // int8
             let v = c.take(1)?[0] as i32;
             Ok(Some(MetaValue::I32(v)))
         }
-        2 => {  // uint16
+        2 => {
+            // uint16
             let v = u16::from_le_bytes(c.take(2)?.try_into().unwrap()) as u32;
             Ok(Some(MetaValue::U32(v)))
         }
-        3 => {  // int16
+        3 => {
+            // int16
             let v = i16::from_le_bytes(c.take(2)?.try_into().unwrap()) as i32;
             Ok(Some(MetaValue::I32(v)))
         }
-        4 => {  // uint32
+        4 => {
+            // uint32
             let v = u32::from_le_bytes(c.take(4)?.try_into().unwrap());
             Ok(Some(MetaValue::U32(v)))
         }
-        5 => {  // int32
+        5 => {
+            // int32
             let v = i32::from_le_bytes(c.take(4)?.try_into().unwrap());
             Ok(Some(MetaValue::I32(v)))
         }
-        6 => {  // float32
+        6 => {
+            // float32
             let v = f32::from_le_bytes(c.take(4)?.try_into().unwrap());
             Ok(Some(MetaValue::F32(v)))
         }
-        7 => {  // bool
+        7 => {
+            // bool
             let v = c.take(1)?[0] != 0;
             Ok(Some(MetaValue::Bool(v)))
         }
-        8 => {  // string
+        8 => {
+            // string
             let n = c.u64()? as usize;
             let s = c.take(n)?;
-            Ok(Some(MetaValue::Str(String::from_utf8_lossy(s).into_owned())))
+            Ok(Some(MetaValue::Str(
+                String::from_utf8_lossy(s).into_owned(),
+            )))
         }
-        10 => {  // uint64
+        10 => {
+            // uint64
             let v = u64::from_le_bytes(c.take(8)?.try_into().unwrap());
             Ok(Some(MetaValue::U64(v)))
         }
-        11 => {  // int64
+        11 => {
+            // int64
             let v = i64::from_le_bytes(c.take(8)?.try_into().unwrap());
             Ok(Some(MetaValue::U64(v as u64)))
         }
-        12 => {  // float64
+        12 => {
+            // float64
             let v = f64::from_le_bytes(c.take(8)?.try_into().unwrap());
             Ok(Some(MetaValue::F32(v as f32)))
         }
-        9 => {  // array
+        9 => {
+            // array
             let elem = c.u32()?;
             let n = c.u64()? as usize;
             match elem {
-                4 => {  // array of uint32
+                4 => {
+                    // array of uint32
                     let mut arr = Vec::with_capacity(n);
                     for _ in 0..n {
                         let v = u32::from_le_bytes(c.take(4)?.try_into().unwrap());
@@ -111,7 +157,8 @@ fn read_kv_value(c: &mut Cursor, vtype: u32) -> Result<Option<MetaValue>, GgufEr
                     }
                     Ok(Some(MetaValue::ArrU32(arr)))
                 }
-                5 => {  // array of int32
+                5 => {
+                    // array of int32
                     let mut arr = Vec::with_capacity(n);
                     for _ in 0..n {
                         let v = i32::from_le_bytes(c.take(4)?.try_into().unwrap());
@@ -119,7 +166,8 @@ fn read_kv_value(c: &mut Cursor, vtype: u32) -> Result<Option<MetaValue>, GgufEr
                     }
                     Ok(Some(MetaValue::ArrI32(arr)))
                 }
-                6 => {  // array of float32
+                6 => {
+                    // array of float32
                     let mut arr = Vec::with_capacity(n);
                     for _ in 0..n {
                         let v = f32::from_le_bytes(c.take(4)?.try_into().unwrap());
@@ -127,7 +175,8 @@ fn read_kv_value(c: &mut Cursor, vtype: u32) -> Result<Option<MetaValue>, GgufEr
                     }
                     Ok(Some(MetaValue::ArrF32(arr)))
                 }
-                8 => {  // array of string
+                8 => {
+                    // array of string
                     let mut arr = Vec::with_capacity(n);
                     for _ in 0..n {
                         let s = c.gguf_string()?;
@@ -139,10 +188,10 @@ fn read_kv_value(c: &mut Cursor, vtype: u32) -> Result<Option<MetaValue>, GgufEr
                 0 | 1 | 2 | 3 | 7 | 10 | 11 | 12 => {
                     // Skip n elements of the given type
                     let bytes_per_elem = match elem {
-                        0 | 1 | 7 => 1,      // uint8, int8, bool
-                        2 | 3 => 2,           // uint16, int16
-                        10 | 11 => 8,         // uint64, int64
-                        12 => 8,              // float64
+                        0 | 1 | 7 => 1, // uint8, int8, bool
+                        2 | 3 => 2,     // uint16, int16
+                        10 | 11 => 8,   // uint64, int64
+                        12 => 8,        // float64
                         _ => unreachable!(),
                     };
                     c.take(n * bytes_per_elem)?;
@@ -160,9 +209,13 @@ impl GgufFile {
         let file = std::fs::File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
         let mut c = Cursor { b: &mmap[..], p: 0 };
-        if c.take(4)? != b"GGUF" { return Err(GgufError::BadMagic); }
+        if c.take(4)? != b"GGUF" {
+            return Err(GgufError::BadMagic);
+        }
         let version = c.u32()?;
-        if version != 2 && version != 3 { return Err(GgufError::UnsupportedVersion(version)); }
+        if version != 2 && version != 3 {
+            return Err(GgufError::UnsupportedVersion(version));
+        }
         let tensor_count = c.u64()?;
         let kv_count = c.u64()?;
         let mut alignment: u64 = 32;
@@ -186,23 +239,39 @@ impl GgufFile {
             let name = c.gguf_string()?;
             let n_dims = c.u32()? as usize;
             let mut dims = Vec::with_capacity(n_dims);
-            for _ in 0..n_dims { dims.push(c.u64()?); }
+            for _ in 0..n_dims {
+                dims.push(c.u64()?);
+            }
             let dtype = c.u32()?;
             let offset = c.u64()?;
-            tensors.push(TensorInfo { name, dims, dtype, offset });
+            tensors.push(TensorInfo {
+                name,
+                dims,
+                dtype,
+                offset,
+            });
         }
         // Datenblock beginnt am nächsten `alignment`-Vielfachen nach den Infos.
         let pad = (alignment - (c.p as u64 % alignment)) % alignment;
         let data_start = c.p + pad as usize;
-        Ok(GgufFile { _mmap: mmap, kv, tensors, data_start })
+        Ok(GgufFile {
+            _mmap: mmap,
+            kv,
+            tensors,
+            data_start,
+        })
     }
 
     fn info(&self, name: &str) -> Result<&TensorInfo, GgufError> {
-        self.tensors.iter().find(|t| t.name == name)
+        self.tensors
+            .iter()
+            .find(|t| t.name == name)
             .ok_or_else(|| GgufError::TensorNotFound(name.to_string()))
     }
 
-    fn raw(&self) -> &[u8] { &self._mmap[..] }
+    fn raw(&self) -> &[u8] {
+        &self._mmap[..]
+    }
 
     pub fn tensor_f32(&self, name: &str) -> Result<TensorF32, GgufError> {
         let ti = self.info(name)?;
@@ -217,22 +286,32 @@ impl GgufFile {
                 if end > bytes.len() {
                     return Err(GgufError::Malformed(format!(
                         "tensor '{}' data out of bounds: [{}, {}) exceeds file size {}",
-                        name, base, end, bytes.len()
+                        name,
+                        base,
+                        end,
+                        bytes.len()
                     )));
                 }
-                bytes[base..end].chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
+                bytes[base..end]
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                    .collect()
             }
             GGML_F16 => {
                 let end = base + n * 2;
                 if end > bytes.len() {
                     return Err(GgufError::Malformed(format!(
                         "tensor '{}' data out of bounds: [{}, {}) exceeds file size {}",
-                        name, base, end, bytes.len()
+                        name,
+                        base,
+                        end,
+                        bytes.len()
                     )));
                 }
-                bytes[base..end].chunks_exact(2)
-                    .map(|c| f16::from_le_bytes(c.try_into().unwrap()).to_f32()).collect()
+                bytes[base..end]
+                    .chunks_exact(2)
+                    .map(|c| f16::from_le_bytes(c.try_into().unwrap()).to_f32())
+                    .collect()
             }
             GGML_Q8_0 => {
                 if n % QK8_0 != 0 {
@@ -246,7 +325,10 @@ impl GgufFile {
                 if end > bytes.len() {
                     return Err(GgufError::Malformed(format!(
                         "tensor '{}' data out of bounds: [{}, {}) exceeds file size {}",
-                        name, base, end, bytes.len()
+                        name,
+                        base,
+                        end,
+                        bytes.len()
                     )));
                 }
                 let blocks = q8_0::read_blocks(&bytes[base..end], n);
@@ -256,7 +338,11 @@ impl GgufFile {
             }
             other => return Err(GgufError::UnsupportedDtype(other)),
         };
-        Ok(TensorF32 { name: name.to_string(), shape, data })
+        Ok(TensorF32 {
+            name: name.to_string(),
+            shape,
+            data,
+        })
     }
 
     pub fn tensor_q8_0(&self, name: &str) -> Result<TensorQ8_0, GgufError> {
@@ -276,7 +362,10 @@ impl GgufFile {
         if end > bytes.len() {
             return Err(GgufError::Malformed(format!(
                 "tensor '{}' data out of bounds: [{}, {}) exceeds file size {}",
-                name, base, end, bytes.len()
+                name,
+                base,
+                end,
+                bytes.len()
             )));
         }
         let blocks = q8_0::read_blocks(&bytes[base..end], n);
@@ -349,7 +438,11 @@ mod tests {
 
         // Parse the unmodeled array; should return Ok(None) and advance cursor
         let result1 = read_kv_value(&mut cursor, vtype1);
-        assert!(result1.is_ok(), "unmodeled array should not error, got: {:?}", result1);
+        assert!(
+            result1.is_ok(),
+            "unmodeled array should not error, got: {:?}",
+            result1
+        );
         let opt_val1 = result1.expect("result is ok");
         assert!(opt_val1.is_none(), "unmodeled array should return None");
 
@@ -362,7 +455,11 @@ mod tests {
 
         // Parse the sentinel u32; must produce correct value
         let result2 = read_kv_value(&mut cursor, vtype2);
-        assert!(result2.is_ok(), "sentinel u32 should parse, got: {:?}", result2);
+        assert!(
+            result2.is_ok(),
+            "sentinel u32 should parse, got: {:?}",
+            result2
+        );
         let opt_val2 = result2.expect("result is ok");
         assert!(opt_val2.is_some(), "sentinel u32 should produce Some value");
 
@@ -417,7 +514,10 @@ mod tests {
 
         let result1 = read_kv_value(&mut cursor, vtype1);
         assert!(result1.is_ok());
-        assert!(result1.unwrap().is_none(), "array of u16 should return None");
+        assert!(
+            result1.unwrap().is_none(),
+            "array of u16 should return None"
+        );
 
         let key2 = cursor.gguf_string().expect("read key2");
         assert_eq!(key2, "sentinel_i");
@@ -438,8 +538,8 @@ mod tests {
 
     #[test]
     fn test_q8_0_non_aligned_element_count_rejected() {
-        use std::io::Write;
         use std::fs::File;
+        use std::io::Write;
 
         // Regression test: verify that Q8_0 tensors with element counts not divisible by QK8_0 (32)
         // are rejected with GgufError::Malformed before attempting to dequantize.
@@ -511,7 +611,10 @@ mod tests {
                 );
             }
             Ok(_) => panic!("tensor_f32 should reject misaligned Q8_0, but returned Ok"),
-            Err(e) => panic!("tensor_f32 should return Err(GgufError::Malformed), got: {:?}", e),
+            Err(e) => panic!(
+                "tensor_f32 should return Err(GgufError::Malformed), got: {:?}",
+                e
+            ),
         }
     }
 }

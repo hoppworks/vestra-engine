@@ -91,7 +91,10 @@ pub(crate) unsafe fn dot_avx512(a: &[f32], b: &[f32]) -> f32 {
     while i < main {
         lanes = _mm512_add_ps(
             lanes,
-            _mm512_mul_ps(_mm512_loadu_ps(a.as_ptr().add(i)), _mm512_loadu_ps(b.as_ptr().add(i))),
+            _mm512_mul_ps(
+                _mm512_loadu_ps(a.as_ptr().add(i)),
+                _mm512_loadu_ps(b.as_ptr().add(i)),
+            ),
         );
         i += LANES;
     }
@@ -219,7 +222,6 @@ pub(crate) unsafe fn add_avx512(dst: &mut [f32], src: &[f32]) {
         crate::scalar::add(&mut dst[main..n], &src[main..n]);
     }
 }
-
 
 /// Dot product of two 32-lane q8_0 int8 blocks (`ax`, `by`, both signed
 /// bytes in `[-127, 127]`), returned as a raw (unscaled by `d_a*d_b`) i32

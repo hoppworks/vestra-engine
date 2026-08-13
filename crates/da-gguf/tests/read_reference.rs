@@ -1,5 +1,5 @@
-use std::path::Path;
 use da_gguf::GgufFile;
+use std::path::Path;
 
 fn dumps() -> std::path::PathBuf {
     // Tests laufen im Crate-Verzeichnis; ../../../dumps relativ dazu ist der C++-Repo-Root/dumps.
@@ -19,5 +19,9 @@ fn reads_input_image_shape() {
     let n: i64 = t.shape.iter().product();
     assert_eq!(n as usize, t.data.len());
     assert!(t.data.iter().all(|v| v.is_finite()));
-    assert!(t.shape.contains(&224), "expected a 224 dim, got {:?}", t.shape);
+    assert!(
+        t.shape.contains(&224),
+        "expected a 224 dim, got {:?}",
+        t.shape
+    );
 }

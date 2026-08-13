@@ -142,8 +142,14 @@ mod tests {
         rope2d(&mut cached, heads, n, head_dim, &positions, 100.0);
         rope2d_uncached(&mut uncached, heads, n, head_dim, &positions, 100.0);
         assert_eq!(
-            cached.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
-            uncached.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            cached
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            uncached
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
         );
     }
 }

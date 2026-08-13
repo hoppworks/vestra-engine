@@ -66,9 +66,9 @@
 //! `#[cfg(test)]` block) — known quaternions, known FOVs, and the
 //! `affine_inverse(affine_inverse(x)) == x` round-trip property.
 
+use da_graph::Weights;
 use da_kernels::gemm::{Gemm, ScalarGemm};
 use da_kernels::scalar;
-use da_graph::Weights;
 
 use crate::config::EngineError;
 use crate::ModelConfig;
@@ -84,14 +84,21 @@ pub struct PoseOut {
 }
 
 fn get_weight<'a>(weights: &'a Weights, name: &str) -> &'a [f32] {
-    weights.get_f32(name).unwrap_or_else(|| panic!("missing weight tensor {name:?}"))
+    weights
+        .get_f32(name)
+        .unwrap_or_else(|| panic!("missing weight tensor {name:?}"))
 }
 
 /// `y = x[1,k] @ w[k,n] + bias[n]`. `w` must already be laid out
 /// `[in_features, out_features]` — see this module's doc comment.
 fn linear_vec(x: &[f32], k: usize, w: &[f32], b: &[f32]) -> Vec<f32> {
     let n = b.len();
-    debug_assert_eq!(w.len(), k * n, "linear weight shape mismatch: expected {k}*{n}, got {}", w.len());
+    debug_assert_eq!(
+        w.len(),
+        k * n,
+        "linear weight shape mismatch: expected {k}*{n}, got {}",
+        w.len()
+    );
     let mut y = vec![0f32; n];
     ScalarGemm.gemm(1, n, k, x, w, &mut y);
     scalar::add_bias_rows(&mut y, 1, n, b);
@@ -138,9 +145,15 @@ fn mlp_pose_enc(cam_token: &[f32], d: usize, weights: &Weights) -> [f32; 9] {
     debug_assert_eq!(fov_head.len(), 2);
 
     [
-        t_head[0], t_head[1], t_head[2],
-        q_head[0], q_head[1], q_head[2], q_head[3],
-        fov_head[0], fov_head[1],
+        t_head[0],
+        t_head[1],
+        t_head[2],
+        q_head[0],
+        q_head[1],
+        q_head[2],
+        q_head[3],
+        fov_head[0],
+        fov_head[1],
     ]
 }
 
@@ -160,9 +173,21 @@ fn decode(pe: &[f32; 9], h: usize, w: usize) -> ([f32; 12], [f32; 9]) {
     // quat_to_mat -> R (3x3 row-major)
     let s = 2.0f32 / (qi * qi + qj * qj + qk * qk + qr * qr);
     let r = [
-        [1.0 - s * (qj * qj + qk * qk), s * (qi * qj - qk * qr), s * (qi * qk + qj * qr)],
-        [s * (qi * qj + qk * qr), 1.0 - s * (qi * qi + qk * qk), s * (qj * qk - qi * qr)],
-        [s * (qi * qk - qj * qr), s * (qj * qk + qi * qr), 1.0 - s * (qi * qi + qj * qj)],
+        [
+            1.0 - s * (qj * qj + qk * qk),
+            s * (qi * qj - qk * qr),
+            s * (qi * qk + qj * qr),
+        ],
+        [
+            s * (qi * qj + qk * qr),
+            1.0 - s * (qi * qi + qk * qk),
+            s * (qj * qk - qi * qr),
+        ],
+        [
+            s * (qi * qk - qj * qr),
+            s * (qj * qk + qi * qr),
+            1.0 - s * (qi * qi + qj * qj),
+        ],
     ];
 
     let t = [tx, ty, tz]; // c2w translation, no separate transform
@@ -229,13 +254,20 @@ pub fn cam_pose(
     let d = bb0_w.len() / hidden0;
 
     if cam_token.is_empty() || cam_token.len() != d {
-        return Err(EngineError::CamTokenDimMismatch { expected: d, got: cam_token.len() });
+        return Err(EngineError::CamTokenDimMismatch {
+            expected: d,
+            got: cam_token.len(),
+        });
     }
 
     let pose_enc = mlp_pose_enc(cam_token, d, weights);
     let (extrinsics, intrinsics) = decode(&pose_enc, h, w);
 
-    Ok(PoseOut { extrinsics, intrinsics, pose_enc })
+    Ok(PoseOut {
+        extrinsics,
+        intrinsics,
+        pose_enc,
+    })
 }
 
 #[cfg(test)]
@@ -285,9 +317,21 @@ mod tests {
         let (qi, qj, qk, qr) = (pe[3], pe[4], pe[5], pe[6]);
         let s = 2.0f32 / (qi * qi + qj * qj + qk * qk + qr * qr);
         [
-            [1.0 - s * (qj * qj + qk * qk), s * (qi * qj - qk * qr), s * (qi * qk + qj * qr)],
-            [s * (qi * qj + qk * qr), 1.0 - s * (qi * qi + qk * qk), s * (qj * qk - qi * qr)],
-            [s * (qi * qk - qj * qr), s * (qj * qk + qi * qr), 1.0 - s * (qi * qi + qj * qj)],
+            [
+                1.0 - s * (qj * qj + qk * qk),
+                s * (qi * qj - qk * qr),
+                s * (qi * qk + qj * qr),
+            ],
+            [
+                s * (qi * qj + qk * qr),
+                1.0 - s * (qi * qi + qk * qk),
+                s * (qj * qk - qi * qr),
+            ],
+            [
+                s * (qi * qk - qj * qr),
+                s * (qj * qk + qi * qr),
+                1.0 - s * (qi * qi + qj * qj),
+            ],
         ]
     }
 
@@ -401,7 +445,11 @@ mod tests {
 
         // ext = [R^T | -R^T@T] per decode(); now invert AGAIN by treating
         // ext as its own [R2|T2] and applying the same affine_inverse.
-        let r2 = [[ext[0], ext[1], ext[2]], [ext[4], ext[5], ext[6]], [ext[8], ext[9], ext[10]]];
+        let r2 = [
+            [ext[0], ext[1], ext[2]],
+            [ext[4], ext[5], ext[6]],
+            [ext[8], ext[9], ext[10]],
+        ];
         let t2 = [ext[3], ext[7], ext[11]];
         let mut r2t = [[0f32; 3]; 3];
         for row in 0..3 {
@@ -466,10 +514,22 @@ mod tests {
         let cfg = test_cfg();
         let empty: Vec<f32> = vec![];
         let err = cam_pose(&empty, 10, 10, &cfg, &weights).unwrap_err();
-        assert!(matches!(err, EngineError::CamTokenDimMismatch { expected: 4, got: 0 }));
+        assert!(matches!(
+            err,
+            EngineError::CamTokenDimMismatch {
+                expected: 4,
+                got: 0
+            }
+        ));
 
         let wrong = vec![0.0f32; d + 1];
         let err = cam_pose(&wrong, 10, 10, &cfg, &weights).unwrap_err();
-        assert!(matches!(err, EngineError::CamTokenDimMismatch { expected: 4, got: 5 }));
+        assert!(matches!(
+            err,
+            EngineError::CamTokenDimMismatch {
+                expected: 4,
+                got: 5
+            }
+        ));
     }
 }

@@ -41,8 +41,9 @@ use std::path::Path;
 use da_gguf::GgufFile;
 use da_graph::{CpuBackend, Weights};
 
-use crate::backbone::Backbone;
+use crate::backbone::{Backbone, BackboneOutputs};
 use crate::config::EngineError;
+use crate::dpt_head::{HeadWorkspace, WinogradFilterCache};
 use crate::pos_embed::{prepare_tokens, PosEmbedCache};
 use crate::pose::cam_pose;
 use crate::preprocess::preprocess;
@@ -125,7 +126,11 @@ pub fn weights_from_gguf(f: &GgufFile, _prefer: QuantPref) -> Result<Weights, En
 /// out_features]` layout `da_graph::Op::Gemm` (and therefore
 /// `vit_block::run_linear`/`pose::linear_vec`) require.
 fn transpose_2d(data: &[f32], rows: usize, cols: usize) -> Vec<f32> {
-    debug_assert_eq!(data.len(), rows * cols, "transpose_2d: data length must equal rows*cols");
+    debug_assert_eq!(
+        data.len(),
+        rows * cols,
+        "transpose_2d: data length must equal rows*cols"
+    );
     let mut out = vec![0f32; rows * cols];
     for r in 0..rows {
         for c in 0..cols {
@@ -145,6 +150,15 @@ pub struct InferOut {
     pub w: usize,
     pub extrinsics: [f32; 12],
     pub intrinsics: [f32; 9],
+}
+
+/// Depth-only output used by runtime benchmarks that compare the same work
+/// as the C++ and PyTorch depth paths (no camera-pose head).
+pub struct DepthInferOut {
+    pub depth: Vec<f32>,
+    pub conf: Vec<f32>,
+    pub h: usize,
+    pub w: usize,
 }
 
 /// The end-to-end facade: owns a loaded model's config + weights, plus the
@@ -168,6 +182,8 @@ pub struct Engine {
     backend: CpuBackend,
     pos_cache: PosEmbedCache,
     uv_cache: UvEmbedCache,
+    wino_cache: WinogradFilterCache,
+    head_workspace: HeadWorkspace,
 }
 
 impl Engine {
@@ -180,7 +196,11 @@ impl Engine {
         // Verify that out_layers is strictly ascending — the invariant that
         // `Engine::infer`'s `.last()` call relies on to select the deepest
         // (final) transformer layer's cam_token for pose regression.
-        debug_assert!(cfg.out_layers.windows(2).all(|w| w[0] < w[1]), "out_layers must be strictly ascending, got {:?}", cfg.out_layers);
+        debug_assert!(
+            cfg.out_layers.windows(2).all(|w| w[0] < w[1]),
+            "out_layers must be strictly ascending, got {:?}",
+            cfg.out_layers
+        );
         let weights = weights_from_gguf(&f, quant_prefer)?;
         Ok(Engine {
             cfg,
@@ -188,6 +208,87 @@ impl Engine {
             backend: CpuBackend::new(),
             pos_cache: PosEmbedCache::new(),
             uv_cache: UvEmbedCache::new(),
+            wino_cache: WinogradFilterCache::new(),
+            head_workspace: HeadWorkspace::new(),
+        })
+    }
+
+    fn forward_depth(
+        &mut self,
+        raw_hwc_u8: &[u8],
+        h: usize,
+        w: usize,
+    ) -> (dpt_head::DepthOut, BackboneOutputs, usize, usize) {
+        let profile = std::env::var_os("DA_PROFILE").is_some();
+        let started = std::time::Instant::now();
+        let mut chw = Vec::new();
+        let (ph, pw) = preprocess(raw_hwc_u8, h, w, &self.cfg, &mut chw);
+        let preprocessed = std::time::Instant::now();
+
+        let mut tokens = Vec::new();
+        let (gh, gw) = prepare_tokens(
+            &chw,
+            ph,
+            pw,
+            &self.cfg,
+            &self.weights,
+            &mut self.pos_cache,
+            &mut tokens,
+        );
+        let tokens_prepared = std::time::Instant::now();
+
+        let backbone = Backbone::new(&self.cfg, &self.weights, &self.backend);
+        let bb_out = backbone.forward(&mut tokens, gh, gw, &self.cfg.out_layers);
+        let backbone_done = std::time::Instant::now();
+        let depth_out = if std::env::var_os("DA3_DISABLE_HEAD_WORKSPACE").is_some() {
+            dpt_head::dpt_head(
+                &bb_out.feats,
+                ph,
+                pw,
+                &self.cfg,
+                &self.weights,
+                &mut self.uv_cache,
+                &mut self.wino_cache,
+            )
+        } else {
+            dpt_head::dpt_head_with_workspace(
+                &bb_out.feats,
+                ph,
+                pw,
+                &self.cfg,
+                &self.weights,
+                &mut self.uv_cache,
+                &mut self.wino_cache,
+                &self.head_workspace,
+            )
+        };
+        if profile {
+            let head_done = std::time::Instant::now();
+            eprintln!(
+                "profile: preprocess={:.1}ms tokens={:.1}ms backbone={:.1}ms head={:.1}ms",
+                (preprocessed - started).as_secs_f64() * 1e3,
+                (tokens_prepared - preprocessed).as_secs_f64() * 1e3,
+                (backbone_done - tokens_prepared).as_secs_f64() * 1e3,
+                (head_done - backbone_done).as_secs_f64() * 1e3,
+            );
+        }
+        (depth_out, bb_out, ph, pw)
+    }
+
+    /// Runs only preprocessing, backbone and the depth/confidence head.
+    /// This is the fair timing path against reference depth-only runners.
+    pub fn infer_depth(
+        &mut self,
+        raw_hwc_u8: &[u8],
+        h: usize,
+        w: usize,
+    ) -> Result<DepthInferOut, EngineError> {
+        let (depth_out, _, _, _) = self.forward_depth(raw_hwc_u8, h, w);
+        Ok(DepthInferOut {
+            depth: depth_out.depth,
+            conf: depth_out.conf,
+            h: depth_out.h,
+            w: depth_out.w,
         })
     }
 
@@ -218,17 +319,13 @@ impl Engine {
     /// convention (documented on their `get_weight` helpers: a missing
     /// weight tensor is a structural model-loading bug, not a recoverable
     /// runtime/input error) and is NOT changed by this task.
-    pub fn infer(&mut self, raw_hwc_u8: &[u8], h: usize, w: usize) -> Result<InferOut, EngineError> {
-        let mut chw = Vec::new();
-        let (ph, pw) = preprocess(raw_hwc_u8, h, w, &self.cfg, &mut chw);
-
-        let mut tokens = Vec::new();
-        let (gh, gw) = prepare_tokens(&chw, ph, pw, &self.cfg, &self.weights, &mut self.pos_cache, &mut tokens);
-
-        let backbone = Backbone::new(&self.cfg, &self.weights, &self.backend);
-        let bb_out = backbone.forward(&mut tokens, gh, gw, &self.cfg.out_layers);
-
-        let depth_out = dpt_head::dpt_head(&bb_out.feats, ph, pw, &self.cfg, &self.weights, &mut self.uv_cache);
+    pub fn infer(
+        &mut self,
+        raw_hwc_u8: &[u8],
+        h: usize,
+        w: usize,
+    ) -> Result<InferOut, EngineError> {
+        let (depth_out, bb_out, ph, pw) = self.forward_depth(raw_hwc_u8, h, w);
 
         // Select the camera token from the LAST (deepest) out-layer for pose regression.
         // This relies on the invariant that `cfg.out_layers` is strictly ascending
@@ -315,9 +412,15 @@ mod weights_from_gguf_tests {
 
         let f = GgufFile::open(&path).expect("open synthetic gguf");
         let weights = weights_from_gguf(&f, QuantPref::PreferF32).expect("weights_from_gguf");
-        let got = weights.get_f32("some.linear.weight").expect("tensor present");
+        let got = weights
+            .get_f32("some.linear.weight")
+            .expect("tensor present");
 
-        assert_eq!(got, &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0][..], "rank-2 tensor must be transposed [2,3] -> [3,2] on load");
+        assert_eq!(
+            got,
+            &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0][..],
+            "rank-2 tensor must be transposed [2,3] -> [3,2] on load"
+        );
 
         let _ = std::fs::remove_file(&path);
     }

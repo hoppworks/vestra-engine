@@ -1,3 +1,11 @@
+# Historischer x86-64-Plan (abgelöst)
+
+> Dieser Plan beschreibt den Zustand vor den echten Ryzen-9-Messungen und ist
+> nicht mehr der operative Einstiegspunkt. Für die aktuelle Architektur,
+> akzeptierten Entscheidungen, Messwerte und eine reproduzierbare Fortsetzung
+> siehe den [CPU-F32-Statusbericht](DA3_CPU_F32_STATUS.md). Er hat Vorrang,
+> falls Aussagen in diesem historischen Dokument widersprechen.
+
 # Nächste Schritte auf dem x86-64-Rechner
 
 Dieses Repo (inkl. `depth-anything-rs/`) wurde komplett auf einer arm64-Maschine (Apple Silicon)

@@ -40,7 +40,13 @@ struct GgufBuilder {
 
 impl GgufBuilder {
     fn new() -> Self {
-        GgufBuilder { kv: Vec::new(), kv_count: 0, tensor_info: Vec::new(), tensor_count: 0, data: Vec::new() }
+        GgufBuilder {
+            kv: Vec::new(),
+            kv_count: 0,
+            tensor_info: Vec::new(),
+            tensor_count: 0,
+            data: Vec::new(),
+        }
     }
 
     fn write_gguf_string(buf: &mut Vec<u8>, s: &str) {
@@ -80,7 +86,8 @@ impl GgufBuilder {
         Self::write_gguf_string(&mut self.kv, key);
         self.kv.extend_from_slice(&9u32.to_le_bytes());
         self.kv.extend_from_slice(&6u32.to_le_bytes());
-        self.kv.extend_from_slice(&(vals.len() as u64).to_le_bytes());
+        self.kv
+            .extend_from_slice(&(vals.len() as u64).to_le_bytes());
         for v in vals {
             self.kv.extend_from_slice(&v.to_le_bytes());
         }
@@ -91,7 +98,8 @@ impl GgufBuilder {
         Self::write_gguf_string(&mut self.kv, key);
         self.kv.extend_from_slice(&9u32.to_le_bytes());
         self.kv.extend_from_slice(&5u32.to_le_bytes());
-        self.kv.extend_from_slice(&(vals.len() as u64).to_le_bytes());
+        self.kv
+            .extend_from_slice(&(vals.len() as u64).to_le_bytes());
         for v in vals {
             self.kv.extend_from_slice(&v.to_le_bytes());
         }
@@ -101,9 +109,11 @@ impl GgufBuilder {
     fn tensor_f32(&mut self, name: &str, values: &[f32]) {
         Self::write_gguf_string(&mut self.tensor_info, name);
         self.tensor_info.extend_from_slice(&1u32.to_le_bytes());
-        self.tensor_info.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        self.tensor_info
+            .extend_from_slice(&(values.len() as u64).to_le_bytes());
         self.tensor_info.extend_from_slice(&0u32.to_le_bytes());
-        self.tensor_info.extend_from_slice(&(self.data.len() as u64).to_le_bytes());
+        self.tensor_info
+            .extend_from_slice(&(self.data.len() as u64).to_le_bytes());
         for v in values {
             self.data.extend_from_slice(&v.to_le_bytes());
         }
@@ -182,7 +192,10 @@ fn build_synthetic_gguf() -> Vec<u8> {
     g.kv_str("depthanything3.img.resize_mode", "bilinear");
     g.kv_u32("depthanything3.cam.dim_in", C_IN as u32);
 
-    g.tensor_f32("vit.patch_embed.weight", &rng.vec(EMBED * 3 * PATCH * PATCH));
+    g.tensor_f32(
+        "vit.patch_embed.weight",
+        &rng.vec(EMBED * 3 * PATCH * PATCH),
+    );
     g.tensor_f32("vit.patch_embed.bias", &rng.vec(EMBED));
     g.tensor_f32("vit.pos_embed", &rng.vec((GRID * GRID + 1) * EMBED));
     g.tensor_f32("vit.cls_token", &rng.vec(EMBED));
@@ -218,27 +231,63 @@ fn build_synthetic_gguf() -> Vec<u8> {
     g.tensor_f32("head.resize.3.bias", &rng.vec(OC[3]));
 
     for s in 0..4 {
-        g.tensor_f32(&format!("head.scratch.layer{}_rn.weight", s + 1), &rng.vec(FUSION_C * OC[s] * 3 * 3));
+        g.tensor_f32(
+            &format!("head.scratch.layer{}_rn.weight", s + 1),
+            &rng.vec(FUSION_C * OC[s] * 3 * 3),
+        );
     }
 
     for i in 1..=4 {
         if i != 4 {
-            g.tensor_f32(&format!("head.scratch.rn{i}.rc1.c1.weight"), &rng.vec(FUSION_C * FUSION_C * 3 * 3));
-            g.tensor_f32(&format!("head.scratch.rn{i}.rc1.c1.bias"), &rng.vec(FUSION_C));
-            g.tensor_f32(&format!("head.scratch.rn{i}.rc1.c2.weight"), &rng.vec(FUSION_C * FUSION_C * 3 * 3));
-            g.tensor_f32(&format!("head.scratch.rn{i}.rc1.c2.bias"), &rng.vec(FUSION_C));
+            g.tensor_f32(
+                &format!("head.scratch.rn{i}.rc1.c1.weight"),
+                &rng.vec(FUSION_C * FUSION_C * 3 * 3),
+            );
+            g.tensor_f32(
+                &format!("head.scratch.rn{i}.rc1.c1.bias"),
+                &rng.vec(FUSION_C),
+            );
+            g.tensor_f32(
+                &format!("head.scratch.rn{i}.rc1.c2.weight"),
+                &rng.vec(FUSION_C * FUSION_C * 3 * 3),
+            );
+            g.tensor_f32(
+                &format!("head.scratch.rn{i}.rc1.c2.bias"),
+                &rng.vec(FUSION_C),
+            );
         }
-        g.tensor_f32(&format!("head.scratch.rn{i}.rc2.c1.weight"), &rng.vec(FUSION_C * FUSION_C * 3 * 3));
-        g.tensor_f32(&format!("head.scratch.rn{i}.rc2.c1.bias"), &rng.vec(FUSION_C));
-        g.tensor_f32(&format!("head.scratch.rn{i}.rc2.c2.weight"), &rng.vec(FUSION_C * FUSION_C * 3 * 3));
-        g.tensor_f32(&format!("head.scratch.rn{i}.rc2.c2.bias"), &rng.vec(FUSION_C));
-        g.tensor_f32(&format!("head.scratch.rn{i}.out.weight"), &rng.vec(FUSION_C * FUSION_C * 1 * 1));
+        g.tensor_f32(
+            &format!("head.scratch.rn{i}.rc2.c1.weight"),
+            &rng.vec(FUSION_C * FUSION_C * 3 * 3),
+        );
+        g.tensor_f32(
+            &format!("head.scratch.rn{i}.rc2.c1.bias"),
+            &rng.vec(FUSION_C),
+        );
+        g.tensor_f32(
+            &format!("head.scratch.rn{i}.rc2.c2.weight"),
+            &rng.vec(FUSION_C * FUSION_C * 3 * 3),
+        );
+        g.tensor_f32(
+            &format!("head.scratch.rn{i}.rc2.c2.bias"),
+            &rng.vec(FUSION_C),
+        );
+        g.tensor_f32(
+            &format!("head.scratch.rn{i}.out.weight"),
+            &rng.vec(FUSION_C * FUSION_C * 1 * 1),
+        );
         g.tensor_f32(&format!("head.scratch.rn{i}.out.bias"), &rng.vec(FUSION_C));
     }
 
-    g.tensor_f32("head.scratch.out1.weight", &rng.vec(FEAT_HALF * FUSION_C * 3 * 3));
+    g.tensor_f32(
+        "head.scratch.out1.weight",
+        &rng.vec(FEAT_HALF * FUSION_C * 3 * 3),
+    );
     g.tensor_f32("head.scratch.out1.bias", &rng.vec(FEAT_HALF));
-    g.tensor_f32("head.scratch.out2a.weight", &rng.vec(32 * FEAT_HALF * 3 * 3));
+    g.tensor_f32(
+        "head.scratch.out2a.weight",
+        &rng.vec(32 * FEAT_HALF * 3 * 3),
+    );
     g.tensor_f32("head.scratch.out2a.bias", &rng.vec(32));
     g.tensor_f32("head.scratch.out2b.weight", &rng.vec(OUTPUT_DIM * 32));
     g.tensor_f32("head.scratch.out2b.bias", &rng.vec(OUTPUT_DIM));
@@ -263,14 +312,22 @@ fn temp_path(suffix: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    std::env::temp_dir().join(format!("da_cli_bench_native_{pid}_{nanos}_{counter}{suffix}"))
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "da_cli_bench_native_{pid}_{nanos}_{counter}{suffix}"
+    ))
 }
 
 #[test]
 fn bench_prints_parsable_median_and_p95_against_synthetic_model() {
     let model_path = temp_path(".gguf");
-    std::fs::File::create(&model_path).unwrap().write_all(&build_synthetic_gguf()).expect("write synthetic gguf");
+    std::fs::File::create(&model_path)
+        .unwrap()
+        .write_all(&build_synthetic_gguf())
+        .expect("write synthetic gguf");
 
     // 4x4 RGB PNG matches this synthetic model's `image_size=4` (identity
     // resize regime — see build_synthetic_gguf's doc comment).
@@ -284,23 +341,56 @@ fn bench_prints_parsable_median_and_p95_against_synthetic_model() {
     img.save(&image_path).expect("write synthetic input PNG");
 
     let mut cmd = assert_cmd::Command::cargo_bin("da").expect("da binary should build");
-    cmd.arg("bench").arg("--model").arg(&model_path).arg("--image").arg(&image_path).arg("--repeat").arg("2").arg("--warmup").arg("1");
+    cmd.arg("bench")
+        .arg("--model")
+        .arg(&model_path)
+        .arg("--image")
+        .arg(&image_path)
+        .arg("--repeat")
+        .arg("2")
+        .arg("--warmup")
+        .arg("1");
     let assert = cmd.assert().success();
     let output = assert.get_output();
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    let median_line = stdout.lines().find(|l| l.starts_with("median_ms=")).unwrap_or_else(|| panic!("no median_ms= line in stdout:\n{stdout}"));
-    let median: f64 = median_line.trim_start_matches("median_ms=").parse().expect("median_ms value should parse as f64");
-    assert!(median.is_finite() && median >= 0.0, "median_ms should be finite and non-negative, got {median}");
+    let median_line = stdout
+        .lines()
+        .find(|l| l.starts_with("median_ms="))
+        .unwrap_or_else(|| panic!("no median_ms= line in stdout:\n{stdout}"));
+    let median: f64 = median_line
+        .trim_start_matches("median_ms=")
+        .parse()
+        .expect("median_ms value should parse as f64");
+    assert!(
+        median.is_finite() && median >= 0.0,
+        "median_ms should be finite and non-negative, got {median}"
+    );
 
-    let p95_line = stdout.lines().find(|l| l.starts_with("p95_ms=")).unwrap_or_else(|| panic!("no p95_ms= line in stdout:\n{stdout}"));
-    let p95: f64 = p95_line.trim_start_matches("p95_ms=").parse().expect("p95_ms value should parse as f64");
-    assert!(p95.is_finite() && p95 >= 0.0, "p95_ms should be finite and non-negative, got {p95}");
-    assert!(p95 >= median - 1e-9, "p95 ({p95}) should be >= median ({median}) over 2 samples");
+    let p95_line = stdout
+        .lines()
+        .find(|l| l.starts_with("p95_ms="))
+        .unwrap_or_else(|| panic!("no p95_ms= line in stdout:\n{stdout}"));
+    let p95: f64 = p95_line
+        .trim_start_matches("p95_ms=")
+        .parse()
+        .expect("p95_ms value should parse as f64");
+    assert!(
+        p95.is_finite() && p95 >= 0.0,
+        "p95_ms should be finite and non-negative, got {p95}"
+    );
+    assert!(
+        p95 >= median - 1e-9,
+        "p95 ({p95}) should be >= median ({median}) over 2 samples"
+    );
 
     // Exactly `repeat=2` iter lines, per-iteration timings.
     let iter_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("iter[")).collect();
-    assert_eq!(iter_lines.len(), 2, "expected 2 iter[..]_ms lines for --repeat 2, got: {iter_lines:?}");
+    assert_eq!(
+        iter_lines.len(),
+        2,
+        "expected 2 iter[..]_ms lines for --repeat 2, got: {iter_lines:?}"
+    );
 
     let _ = std::fs::remove_file(&model_path);
     let _ = std::fs::remove_file(&image_path);

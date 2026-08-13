@@ -29,7 +29,9 @@ fn load_weights(g: &GgufFile) -> Weights {
         da_engine::POS_EMBED_WEIGHT,
         da_engine::CLS_TOKEN_WEIGHT,
     ] {
-        let t = g.tensor_f32(name).unwrap_or_else(|e| panic!("missing/unreadable tensor {name:?}: {e}"));
+        let t = g
+            .tensor_f32(name)
+            .unwrap_or_else(|e| panic!("missing/unreadable tensor {name:?}: {e}"));
         w.insert_f32(name, t.data);
     }
     // Register tokens are optional (see REGISTER_TOKENS_WEIGHT doc comment) —
@@ -85,5 +87,11 @@ fn prepare_tokens_matches_reference_pos_embed_added() {
     let mut tokens = Vec::new();
     da_engine::prepare_tokens(&input.data, h, w, &cfg, &weights, &mut cache, &mut tokens);
 
-    assert_parity(&tokens, &expected.data, d.atol(), d.rtol(), "prepare_tokens/pos_embed_added");
+    assert_parity(
+        &tokens,
+        &expected.data,
+        d.atol(),
+        d.rtol(),
+        "prepare_tokens/pos_embed_added",
+    );
 }

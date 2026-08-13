@@ -1,4 +1,4 @@
-//! `da`: the depth-anything.cpp-rs CLI. Two subcommands: `infer` (loads a
+//! `da`: the depth-anything.cpp-rs CLI. Its active subcommands are `infer` (loads a
 //! GGUF model, runs inference on an image, writes depth + camera pose to
 //! disk) and `bench` (loads a model once, times N inference calls, reports
 //! median/p95 latency — see `bench.rs` and `../scripts/compare_e2e.sh`).
@@ -81,7 +81,12 @@ fn main() -> ExitCode {
             }
         }
         Command::Bench(args) => {
-            let req = BenchRequest { model: args.model, image: args.image, repeat: args.repeat, warmup: args.warmup };
+            let req = BenchRequest {
+                model: args.model,
+                image: args.image,
+                repeat: args.repeat,
+                warmup: args.warmup,
+            };
             match run_bench(&req) {
                 Ok(stats) => {
                     print_bench_report(&req, &stats);
@@ -116,7 +121,9 @@ mod tests {
         ])
         .expect("well-formed argv should parse");
 
-        let Command::Infer(args) = cli.command else { panic!("expected Command::Infer") };
+        let Command::Infer(args) = cli.command else {
+            panic!("expected Command::Infer")
+        };
         assert_eq!(args.model, PathBuf::from("model.gguf"));
         assert_eq!(args.image, PathBuf::from("in.png"));
         assert_eq!(args.out_depth, PathBuf::from("out.pfm"));
@@ -126,15 +133,31 @@ mod tests {
     #[test]
     fn infer_missing_required_arg_fails_to_parse() {
         // --out-pose is missing.
-        let result = Cli::try_parse_from(["da", "infer", "--model", "model.gguf", "--image", "in.png", "--out-depth", "out.pfm"]);
-        assert!(result.is_err(), "missing required --out-pose should fail to parse");
+        let result = Cli::try_parse_from([
+            "da",
+            "infer",
+            "--model",
+            "model.gguf",
+            "--image",
+            "in.png",
+            "--out-depth",
+            "out.pfm",
+        ]);
+        assert!(
+            result.is_err(),
+            "missing required --out-pose should fail to parse"
+        );
     }
 
     #[test]
     fn bench_parses_with_defaults() {
-        let cli = Cli::try_parse_from(["da", "bench", "--model", "model.gguf", "--image", "in.png"]).expect("well-formed argv should parse");
+        let cli =
+            Cli::try_parse_from(["da", "bench", "--model", "model.gguf", "--image", "in.png"])
+                .expect("well-formed argv should parse");
 
-        let Command::Bench(args) = cli.command else { panic!("expected Command::Bench") };
+        let Command::Bench(args) = cli.command else {
+            panic!("expected Command::Bench")
+        };
         assert_eq!(args.model, PathBuf::from("model.gguf"));
         assert_eq!(args.image, PathBuf::from("in.png"));
         assert_eq!(args.repeat, 10, "--repeat should default to 10");
@@ -143,9 +166,23 @@ mod tests {
 
     #[test]
     fn bench_parses_explicit_repeat_and_warmup() {
-        let cli = Cli::try_parse_from(["da", "bench", "--model", "model.gguf", "--image", "in.png", "--repeat", "2", "--warmup", "0"]).expect("well-formed argv should parse");
+        let cli = Cli::try_parse_from([
+            "da",
+            "bench",
+            "--model",
+            "model.gguf",
+            "--image",
+            "in.png",
+            "--repeat",
+            "2",
+            "--warmup",
+            "0",
+        ])
+        .expect("well-formed argv should parse");
 
-        let Command::Bench(args) = cli.command else { panic!("expected Command::Bench") };
+        let Command::Bench(args) = cli.command else {
+            panic!("expected Command::Bench")
+        };
         assert_eq!(args.repeat, 2);
         assert_eq!(args.warmup, 0);
     }
@@ -153,7 +190,10 @@ mod tests {
     #[test]
     fn bench_missing_required_arg_fails_to_parse() {
         let result = Cli::try_parse_from(["da", "bench", "--model", "model.gguf"]);
-        assert!(result.is_err(), "missing required --image should fail to parse");
+        assert!(
+            result.is_err(),
+            "missing required --image should fail to parse"
+        );
     }
 
     #[test]

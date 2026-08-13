@@ -22,7 +22,11 @@ use da_gguf::{BlockQ8_0, QK8_0};
 /// # Panics
 /// Panics (via `assert_eq!`) if `x.len() != out.len() * QK8_0`.
 pub fn quantize_row_q8_0(x: &[f32], out: &mut [BlockQ8_0]) {
-    assert_eq!(x.len(), out.len() * QK8_0, "x.len() must be out.len()*QK8_0");
+    assert_eq!(
+        x.len(),
+        out.len() * QK8_0,
+        "x.len() must be out.len()*QK8_0"
+    );
 
     for (bi, block) in out.iter_mut().enumerate() {
         let src = &x[bi * QK8_0..(bi + 1) * QK8_0];

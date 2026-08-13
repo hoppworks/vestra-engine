@@ -40,7 +40,12 @@ impl Plan {
 
     /// Fill graph inputs/weights into the arena, run every op through
     /// `backend`, and read back the graph outputs.
-    pub fn run(&self, backend: &dyn Backend, inputs: &[&[f32]], weights: &Weights) -> Vec<Vec<f32>> {
+    pub fn run(
+        &self,
+        backend: &dyn Backend,
+        inputs: &[&[f32]],
+        weights: &Weights,
+    ) -> Vec<Vec<f32>> {
         let mut arena = self.arena.borrow_mut();
 
         assert_eq!(

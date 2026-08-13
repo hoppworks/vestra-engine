@@ -5,6 +5,10 @@ use da_gguf::GgufFile;
 mod keys {
     pub const ARCH: &str = "depthanything3.arch";
     pub const PATCH_SIZE: &str = "depthanything3.patch_size";
+    /// Current converter key used by the C++ reference implementation.
+    pub const IMG_RESIZE_TARGET: &str = "depthanything3.img.resize_target";
+    /// Legacy key retained for GGUFs produced before the resize contract was
+    /// made explicit.
     pub const IMAGE_SIZE: &str = "depthanything3.image_size";
     pub const VIT_EMBED_DIM: &str = "depthanything3.vit.embed_dim";
     pub const VIT_DEPTH: &str = "depthanything3.vit.depth";
@@ -192,7 +196,10 @@ impl ModelConfig {
         Ok(ModelConfig {
             arch,
             patch_size: req_u32(f, keys::PATCH_SIZE)?,
-            image_size: req_u32(f, keys::IMAGE_SIZE)?,
+            image_size: f
+                .meta_u32(keys::IMG_RESIZE_TARGET)
+                .or_else(|| f.meta_u32(keys::IMAGE_SIZE))
+                .ok_or(EngineError::MissingKey(keys::IMG_RESIZE_TARGET))?,
             embed_dim: req_u32(f, keys::VIT_EMBED_DIM)?,
             depth: req_u32(f, keys::VIT_DEPTH)?,
             num_heads: req_u32(f, keys::VIT_NUM_HEADS)?,
@@ -208,10 +215,16 @@ impl ModelConfig {
                 .meta_str(keys::VIT_FFN_TYPE)
                 .unwrap_or_else(|| DEFAULT_FFN_TYPE.to_string()),
             alt_start: f.meta_i32(keys::VIT_ALT_START).unwrap_or(DEFAULT_ALT_START),
-            cat_token: f.meta_bool(keys::VIT_CAT_TOKEN).unwrap_or(DEFAULT_CAT_TOKEN),
+            cat_token: f
+                .meta_bool(keys::VIT_CAT_TOKEN)
+                .unwrap_or(DEFAULT_CAT_TOKEN),
             head_features: req_u32(f, keys::HEAD_FEATURES)?,
-            head_max_depth: req_f32(f, keys::HEAD_MAX_DEPTH)?,
-            head_pos_embed: f.meta_bool(keys::HEAD_POS_EMBED).unwrap_or(DEFAULT_HEAD_POS_EMBED),
+            // DA3-BASE is relative depth and the canonical converter omits
+            // this key. This mirrors model_loader.cpp's 0.0 default.
+            head_max_depth: f.meta_f32(keys::HEAD_MAX_DEPTH).unwrap_or(0.0),
+            head_pos_embed: f
+                .meta_bool(keys::HEAD_POS_EMBED)
+                .unwrap_or(DEFAULT_HEAD_POS_EMBED),
             img_mean: req_vec3(f, keys::IMG_MEAN)?,
             img_std: req_vec3(f, keys::IMG_STD)?,
             img_resize_mode: req_str(f, keys::IMG_RESIZE_MODE)?,
@@ -306,10 +319,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "da_engine_test_{}_{}_{}.gguf",
-            pid, nanos, counter
-        ));
+        let path =
+            std::env::temp_dir().join(format!("da_engine_test_{}_{}_{}.gguf", pid, nanos, counter));
         let mut file = std::fs::File::create(&path).expect("create temp gguf");
         file.write_all(&buf).expect("write temp gguf");
         drop(file);

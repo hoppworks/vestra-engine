@@ -24,9 +24,15 @@ fn model() -> Option<GgufFile> {
 /// weight-loading, mirroring `backbone_parity.rs::load_weights`'s pattern.
 fn load_head_weights(g: &GgufFile) -> Weights {
     let mut w = Weights::new();
-    let names: Vec<String> = g.tensor_names().filter(|n| n.starts_with("head.")).map(str::to_string).collect();
+    let names: Vec<String> = g
+        .tensor_names()
+        .filter(|n| n.starts_with("head."))
+        .map(str::to_string)
+        .collect();
     for name in names {
-        let t = g.tensor_f32(&name).unwrap_or_else(|e| panic!("missing/unreadable tensor {name:?}: {e}"));
+        let t = g
+            .tensor_f32(&name)
+            .unwrap_or_else(|e| panic!("missing/unreadable tensor {name:?}: {e}"));
         w.insert_f32(name, t.data);
     }
     w
@@ -89,19 +95,37 @@ fn dpt_head_matches_reference_stages_fused_and_depth() {
     }
 
     if let Ok(expected) = d.reference("head_fused") {
-        assert_parity(&debug.fused, &expected.data, d.atol(), d.rtol(), "head_fused");
+        assert_parity(
+            &debug.fused,
+            &expected.data,
+            d.atol(),
+            d.rtol(),
+            "head_fused",
+        );
     } else {
         eprintln!("[skip] no head_fused dump");
     }
 
     if let Ok(expected) = d.reference("head_depth") {
-        assert_parity(&depth_out.depth, &expected.data, d.atol(), d.rtol(), "head_depth");
+        assert_parity(
+            &depth_out.depth,
+            &expected.data,
+            d.atol(),
+            d.rtol(),
+            "head_depth",
+        );
     } else {
         eprintln!("[skip] no head_depth dump");
     }
 
     if let Ok(expected) = d.reference("head_depth_conf") {
-        assert_parity(&depth_out.conf, &expected.data, d.atol(), d.rtol(), "head_depth_conf");
+        assert_parity(
+            &depth_out.conf,
+            &expected.data,
+            d.atol(),
+            d.rtol(),
+            "head_depth_conf",
+        );
     } else {
         eprintln!("[skip] no head_depth_conf dump");
     }
