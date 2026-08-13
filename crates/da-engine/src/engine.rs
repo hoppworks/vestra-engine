@@ -41,7 +41,9 @@ use std::path::Path;
 use da_gguf::GgufFile;
 use da_graph::{CpuBackend, Weights};
 
-use crate::backbone::{Backbone, BackboneOutputs};
+use crate::backbone::{
+    reference_first_order, select_reference_view_saddle, Backbone, BackboneOutputs,
+};
 use crate::config::EngineError;
 use crate::dpt_head::{HeadWorkspace, WinogradFilterCache};
 use crate::pos_embed::{prepare_tokens, PosEmbedCache};
@@ -181,6 +183,23 @@ pub struct MultiViewInferOut {
     pub w: usize,
 }
 
+struct PreparedMultiView {
+    token_views: Vec<Vec<f32>>,
+    h: usize,
+    w: usize,
+    gh: usize,
+    gw: usize,
+}
+
+fn restore_original_view_order<T>(ordered: Vec<T>, reference_view_index: usize) -> Vec<T> {
+    let mut indexed = reference_first_order(ordered.len(), reference_view_index)
+        .into_iter()
+        .zip(ordered)
+        .collect::<Vec<_>>();
+    indexed.sort_unstable_by_key(|(original_index, _)| *original_index);
+    indexed.into_iter().map(|(_, output)| output).collect()
+}
+
 /// The end-to-end facade: owns a loaded model's config + weights, plus the
 /// two input-independent caches ([`PosEmbedCache`], [`UvEmbedCache`]) that
 /// are safe (and worthwhile) to reuse across repeated [`Engine::infer`]
@@ -312,6 +331,48 @@ impl Engine {
         })
     }
 
+    /// Executes PR #2's automatic multi-view path.
+    ///
+    /// For three or more views with an alternating backbone, this first runs
+    /// the C++-matching local CLS pass, chooses the saddle-balanced reference,
+    /// performs the ordered reference-first forward pass, then restores the
+    /// caller's original view order. Otherwise view zero remains the reference.
+    pub fn infer_multi_view(
+        &mut self,
+        inputs: &[ViewInput<'_>],
+    ) -> Result<MultiViewInferOut, EngineError> {
+        let mut prepared = self.prepare_multi_view(inputs)?;
+        let reference_view_index = if prepared.token_views.len() >= 3 && self.cfg.alt_start >= 0 {
+            let backbone = Backbone::new(&self.cfg, &self.weights, &self.backend);
+            let cls = backbone.capture_local_cls(
+                &prepared.token_views,
+                prepared.gh,
+                prepared.gw,
+                (self.cfg.alt_start as usize).saturating_sub(1),
+            );
+            let reference = select_reference_view_saddle(&cls);
+            let order = reference_first_order(prepared.token_views.len(), reference);
+            let reordered = order
+                .iter()
+                .map(|&index| prepared.token_views[index].clone())
+                .collect();
+            prepared.token_views = reordered;
+            reference
+        } else {
+            0
+        };
+
+        let mut ordered = self.infer_prepared_multi_view_ordered(prepared)?;
+        if reference_view_index != 0 {
+            ordered.views = restore_original_view_order(
+                std::mem::take(&mut ordered.views),
+                reference_view_index,
+            );
+        }
+        ordered.reference_view_index = reference_view_index;
+        Ok(ordered)
+    }
+
     /// Executes one genuine ordered multi-view backbone pass.
     ///
     /// Local transformer blocks run independently per view, while global
@@ -322,6 +383,14 @@ impl Engine {
         &mut self,
         inputs: &[ViewInput<'_>],
     ) -> Result<MultiViewInferOut, EngineError> {
+        let prepared = self.prepare_multi_view(inputs)?;
+        self.infer_prepared_multi_view_ordered(prepared)
+    }
+
+    fn prepare_multi_view(
+        &mut self,
+        inputs: &[ViewInput<'_>],
+    ) -> Result<PreparedMultiView, EngineError> {
         if inputs.is_empty() {
             return Err(EngineError::EmptyViewSet);
         }
@@ -372,19 +441,39 @@ impl Engine {
             token_views.push(tokens);
         }
 
-        let (ph, pw) = processed_shape.expect("non-empty inputs set processed shape");
+        let (h, w) = processed_shape.expect("non-empty inputs set processed shape");
         let (gh, gw) = grid_shape.expect("non-empty inputs set grid shape");
+        Ok(PreparedMultiView {
+            token_views,
+            h,
+            w,
+            gh,
+            gw,
+        })
+    }
+
+    fn infer_prepared_multi_view_ordered(
+        &mut self,
+        mut prepared: PreparedMultiView,
+    ) -> Result<MultiViewInferOut, EngineError> {
+        let h = prepared.h;
+        let w = prepared.w;
         let backbone_out = {
             let backbone = Backbone::new(&self.cfg, &self.weights, &self.backend);
-            backbone.forward_multi_view_ordered(&mut token_views, gh, gw, &self.cfg.out_layers)
+            backbone.forward_multi_view_ordered(
+                &mut prepared.token_views,
+                prepared.gh,
+                prepared.gw,
+                &self.cfg.out_layers,
+            )
         };
 
         let last_layer = backbone_out
             .cam_tokens
             .last()
             .ok_or(EngineError::EmptyOutLayers)?;
-        let mut outputs = Vec::with_capacity(inputs.len());
-        for view_index in 0..inputs.len() {
+        let mut outputs = Vec::with_capacity(prepared.token_views.len());
+        for view_index in 0..prepared.token_views.len() {
             let features = backbone_out
                 .feats
                 .iter()
@@ -392,15 +481,15 @@ impl Engine {
                 .collect::<Vec<_>>();
             let depth_out = dpt_head::dpt_head_with_workspace(
                 &features,
-                ph,
-                pw,
+                h,
+                w,
                 &self.cfg,
                 &self.weights,
                 &mut self.uv_cache,
                 &mut self.wino_cache,
                 &self.head_workspace,
             );
-            let pose_out = cam_pose(&last_layer[view_index], ph, pw, &self.cfg, &self.weights)?;
+            let pose_out = cam_pose(&last_layer[view_index], h, w, &self.cfg, &self.weights)?;
             outputs.push(InferOut {
                 depth: depth_out.depth,
                 conf: depth_out.conf,
@@ -414,8 +503,8 @@ impl Engine {
         Ok(MultiViewInferOut {
             views: outputs,
             reference_view_index: 0,
-            h: ph,
-            w: pw,
+            h,
+            w,
         })
     }
 
@@ -478,6 +567,14 @@ impl Engine {
 #[cfg(test)]
 mod weights_from_gguf_tests {
     use super::*;
+
+    #[test]
+    fn restoring_reference_first_outputs_recovers_caller_order() {
+        assert_eq!(
+            restore_original_view_order(vec!["reference", "first", "second", "third"], 3),
+            vec!["first", "second", "third", "reference"]
+        );
+    }
 
     /// Minimal binary GGUF writer, just enough to round-trip through
     /// `GgufFile::open` (magic, version, KV section (empty here), one

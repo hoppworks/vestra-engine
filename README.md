@@ -30,8 +30,11 @@ The first parity tracer bullet is implemented:
 - a synthetic test proves that a second view affects the first view at global
   attention layers.
 
-Saddle-balanced reference selection for `S>=3`, real-model C++ parity for
-`S=2,3,12`, CUDA, and streaming-window orchestration remain open work.
+For `S>=3`, the automatic path now runs the preliminary local CLS pass,
+selects the saddle-balanced reference view, performs the reference-first
+forward pass, and restores the caller's original view order. Real-model C++
+parity for `S=2,3,12`, CUDA, and streaming-window orchestration remain open
+work.
 
 ## CPU-F32 baseline
 

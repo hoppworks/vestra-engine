@@ -205,6 +205,55 @@ impl<'a> Backbone<'a> {
         }
     }
 
+    /// Captures the CLS row after the first `upto` local transformer blocks.
+    ///
+    /// This is the preliminary pass used by PR #2 for `S >= 3` saddle-balanced
+    /// reference selection. It deliberately runs before camera-token injection
+    /// and before any global block, so no view can influence another here.
+    pub fn capture_local_cls(
+        &self,
+        views: &[Vec<f32>],
+        gh: usize,
+        gw: usize,
+        upto: usize,
+    ) -> Vec<Vec<f32>> {
+        assert!(
+            !views.is_empty(),
+            "local CLS capture needs at least one view"
+        );
+        let cfg = self.cfg;
+        let embed = cfg.embed_dim as usize;
+        assert!(
+            upto <= cfg.depth as usize,
+            "requested {upto} local blocks but model depth is {}",
+            cfg.depth
+        );
+        let n = views[0].len() / embed;
+        assert_eq!(n, 1 + cfg.num_register as usize + gh * gw);
+
+        let mut captured_views = views.to_vec();
+        for view in &mut captured_views {
+            assert_eq!(view.len(), n * embed, "all views must share a token shape");
+            for layer_idx in 0..upto {
+                vit_block(
+                    view,
+                    n,
+                    gh,
+                    gw,
+                    false,
+                    cfg,
+                    layer_idx,
+                    self.weights,
+                    self.backend,
+                );
+            }
+        }
+        captured_views
+            .into_iter()
+            .map(|view| view[..embed].to_vec())
+            .collect()
+    }
+
     /// Runs `cfg.depth` `vit_block` calls over `tokens` in place (applying
     /// camera-token injection at `cfg.alt_start` and local/global attention
     /// alternation per the module doc comment), then host-post-processes
@@ -896,5 +945,34 @@ mod tests {
     fn reference_order_moves_reference_to_front_without_losing_views() {
         assert_eq!(reference_first_order(5, 3), vec![3, 0, 1, 2, 4]);
         assert_eq!(reference_first_order(3, 0), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn preliminary_local_cls_pass_matches_manual_local_blocks() {
+        let cfg = test_cfg(3);
+        let weights = synthetic_weights(&cfg);
+        let backend = CpuBackend::new();
+        let embed = cfg.embed_dim as usize;
+        let original = (0..5 * embed)
+            .map(|index| index as f32 * 0.017 - 0.25)
+            .collect::<Vec<_>>();
+        let mut manual = original.clone();
+        let bb = Backbone::new(&cfg, &weights, &backend);
+
+        for layer_idx in 0..2 {
+            vit_block(
+                &mut manual,
+                5,
+                2,
+                2,
+                false,
+                &cfg,
+                layer_idx,
+                &weights,
+                &backend,
+            );
+        }
+        let cls = bb.capture_local_cls(&[original], 2, 2, 2);
+        assert_eq!(cls, vec![manual[..embed].to_vec()]);
     }
 }
