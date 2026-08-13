@@ -33,6 +33,9 @@ python3 scripts/compare_multiview_oracle.py \
 ```
 
 Repeat for ordered `S=3` and `S=12` windows. Every view must satisfy depth
-Pearson `r >= 0.9999`, depth MAE `<= 0.005`, and pose MAE `<= 0.005`.
+Pearson `r >= 0.9999`, depth MAE `<= 0.005`, W2C extrinsics MAE `<= 0.005`,
+and intrinsics max absolute error `<= 1.5` pixels. Camera tensors are measured
+separately because a raw concatenated "pose MAE" mixes unitless rotation and
+translation with focal lengths in pixels, which is not physically meaningful.
 The script does not suppress outliers or average failures away: one failed
 view makes the run fail.

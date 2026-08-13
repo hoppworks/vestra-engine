@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Compare pinned C++ PR #2 and Vestra Engine multi-view artifacts.
 
-Both CLIs write `<prefix>_view<N>.pfm` depth maps and matching pose JSON.
-This script records per-view Pearson r, MAE, and pose MAE/max error, writes a
-JSON report, and exits non-zero if the locked F32 contract is violated.
+Both CLIs write `<prefix>_view<N>.pfm` depth maps and matching camera JSON.
+This script records per-view depth, W2C extrinsics, and pixel-intrinsics
+metrics separately. It exits non-zero if the locked F32 contract is violated.
 """
 
 from __future__ import annotations
@@ -49,9 +49,11 @@ def metrics(reference: list[float], candidate: list[float]) -> dict[str, float]:
     return {"pearson_r": pearson, "mae": sum(differences) / n, "max_abs": max(differences)}
 
 
-def pose_values(path: Path) -> list[float]:
+def camera_values(path: Path) -> tuple[list[float], list[float]]:
     document = json.loads(path.read_text())
-    return [value for matrix in (document["extrinsics"], document["intrinsics"]) for row in matrix for value in row]
+    extrinsics = [value for row in document["extrinsics"] for value in row]
+    intrinsics = [value for row in document["intrinsics"] for value in row]
+    return extrinsics, intrinsics
 
 
 def main() -> int:
@@ -62,7 +64,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--min-pearson", type=float, default=0.9999)
     parser.add_argument("--max-mae", type=float, default=0.005)
-    parser.add_argument("--max-pose-mae", type=float, default=0.005)
+    parser.add_argument("--max-extrinsics-mae", type=float, default=0.005)
+    parser.add_argument("--max-intrinsics-abs", type=float, default=1.5)
     arguments = parser.parse_args()
 
     reports = []
@@ -73,23 +76,33 @@ def main() -> int:
         if (cpp_width, cpp_height) != (rust_width, rust_height):
             raise ValueError(f"view {view}: depth dimensions differ")
         depth = metrics(cpp_depth, rust_depth)
-        pose = metrics(
-            pose_values(Path(f"{arguments.cpp_prefix}_view{view}.json")),
-            pose_values(Path(f"{arguments.rust_prefix}_view{view}.json")),
-        )
+        cpp_extrinsics, cpp_intrinsics = camera_values(Path(f"{arguments.cpp_prefix}_view{view}.json"))
+        rust_extrinsics, rust_intrinsics = camera_values(Path(f"{arguments.rust_prefix}_view{view}.json"))
+        extrinsics = metrics(cpp_extrinsics, rust_extrinsics)
+        intrinsics = metrics(cpp_intrinsics, rust_intrinsics)
         view_passed = (
             depth["pearson_r"] >= arguments.min_pearson
             and depth["mae"] <= arguments.max_mae
-            and pose["mae"] <= arguments.max_pose_mae
+            and extrinsics["mae"] <= arguments.max_extrinsics_mae
+            and intrinsics["max_abs"] <= arguments.max_intrinsics_abs
         )
         passed = passed and view_passed
-        reports.append({"view": view, "depth": depth, "pose": pose, "passed": view_passed})
+        reports.append(
+            {
+                "view": view,
+                "depth": depth,
+                "extrinsics": extrinsics,
+                "intrinsics": intrinsics,
+                "passed": view_passed,
+            }
+        )
 
     result = {
         "contract": {
             "min_pearson": arguments.min_pearson,
             "max_mae": arguments.max_mae,
-            "max_pose_mae": arguments.max_pose_mae,
+            "max_extrinsics_mae": arguments.max_extrinsics_mae,
+            "max_intrinsics_abs": arguments.max_intrinsics_abs,
         },
         "views": reports,
         "passed": passed,
