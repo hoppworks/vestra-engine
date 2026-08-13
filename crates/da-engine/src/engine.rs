@@ -50,6 +50,8 @@ use crate::pos_embed::{prepare_tokens, PosEmbedCache};
 use crate::pose::cam_pose;
 use crate::preprocess::preprocess;
 use crate::uv_embed::UvEmbedCache;
+#[cfg(feature = "cuda-residual-oracle")]
+use crate::vit_block::CudaMlpExecutor;
 use crate::{dpt_head, ModelConfig};
 
 /// Quantization preference for [`weights_from_gguf`] / [`Engine::load`].
@@ -225,6 +227,8 @@ pub struct Engine {
     head_workspace: HeadWorkspace,
     #[cfg(feature = "cuda-residual-oracle")]
     cuda_residual: Option<vestra_kernels::cuda::CudaRuntime>,
+    #[cfg(feature = "cuda-residual-oracle")]
+    cuda_mlp: Option<CudaMlpExecutor>,
 }
 
 impl Engine {
@@ -253,6 +257,8 @@ impl Engine {
             head_workspace: HeadWorkspace::new(),
             #[cfg(feature = "cuda-residual-oracle")]
             cuda_residual: None,
+            #[cfg(feature = "cuda-residual-oracle")]
+            cuda_mlp: None,
         })
     }
 
@@ -275,7 +281,31 @@ impl Engine {
         self.cuda_residual.is_some()
     }
 
+    /// Enables cached CUDA FC1 → GELU → FC2 execution for every DA3-BASE
+    /// block. Each branch still crosses the host boundary for normalized
+    /// input and residual output, so this is a parity slice—not a GPU speed
+    /// claim—until the surrounding transformer operators are device-native.
+    #[cfg(feature = "cuda-residual-oracle")]
+    pub fn enable_cuda_mlp_oracle(
+        &mut self,
+        device: usize,
+    ) -> Result<(), vestra_kernels::cuda::CudaError> {
+        let runtime = vestra_kernels::cuda::CudaRuntime::new(device)?;
+        self.cuda_mlp = Some(CudaMlpExecutor::new(runtime, &self.cfg, &self.weights)?);
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda-residual-oracle")]
+    #[must_use]
+    pub fn cuda_mlp_oracle_enabled(&self) -> bool {
+        self.cuda_mlp.is_some()
+    }
+
     fn backbone(&self) -> Backbone<'_> {
+        #[cfg(feature = "cuda-residual-oracle")]
+        if let Some(executor) = self.cuda_mlp.as_ref() {
+            return Backbone::new_with_mlp(&self.cfg, &self.weights, &self.backend, executor);
+        }
         #[cfg(feature = "cuda-residual-oracle")]
         if let Some(runtime) = self.cuda_residual.as_ref() {
             return Backbone::new_with_residual(&self.cfg, &self.weights, &self.backend, runtime);

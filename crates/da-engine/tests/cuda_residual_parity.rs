@@ -42,6 +42,43 @@ fn cuda_residual_slice_matches_cpu_depth_and_confidence() {
     assert_close("confidence", &expected.conf, &actual.conf);
 }
 
+/// Verifies the complete cached FC1 → GELU → FC2 CUDA branch in every
+/// transformer block. This intentionally leaves LayerNorm and residuals on
+/// CPU so a numerical failure has one clear owner.
+#[test]
+fn cuda_mlp_slice_matches_cpu_depth_and_confidence() {
+    let (Some(model), Some(image)) = (
+        std::env::var_os("VESTRA_CUDA_MODEL"),
+        std::env::var_os("VESTRA_CUDA_IMAGE"),
+    ) else {
+        return;
+    };
+    let image = image::open(PathBuf::from(image))
+        .expect("configured CUDA parity image must decode")
+        .to_rgb8();
+    let (width, height) = (image.width() as usize, image.height() as usize);
+    let rgb = image.into_raw();
+
+    let mut cpu = Engine::load(PathBuf::from(&model).as_path(), QuantPref::PreferF32)
+        .expect("CPU Engine must load the configured F32 model");
+    let expected = cpu
+        .infer(&rgb, height, width)
+        .expect("CPU inference must succeed");
+
+    let mut cuda = Engine::load(PathBuf::from(model).as_path(), QuantPref::PreferF32)
+        .expect("CUDA parity Engine must load the configured F32 model");
+    cuda.enable_cuda_mlp_oracle(0)
+        .expect("CUDA MLP runtime must initialize and cache parameters");
+    assert!(cuda.cuda_mlp_oracle_enabled());
+    let actual = cuda
+        .infer(&rgb, height, width)
+        .expect("CUDA MLP inference must succeed");
+
+    assert_eq!((actual.w, actual.h), (expected.w, expected.h));
+    assert_close("MLP depth", &expected.depth, &actual.depth);
+    assert_close("MLP confidence", &expected.conf, &actual.conf);
+}
+
 /// Exercises the PR #2-style ordered multi-view path. Set
 /// `VESTRA_CUDA_IMAGES` to two or more colon-separated image paths; without
 /// it the configured single image is duplicated solely to keep this fixture

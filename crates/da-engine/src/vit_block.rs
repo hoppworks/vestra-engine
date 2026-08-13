@@ -68,6 +68,86 @@ pub trait ResidualAddExecutor: Send + Sync {
     fn add_in_place(&self, destination: &mut [f32], source: &[f32]);
 }
 
+/// Execution seam for a complete DA3 MLP branch. Implementations own the
+/// FC1/FC2 parameter lifetime and return the token-major FC2 result; the
+/// residual addition remains an explicitly separate operator boundary.
+pub trait MlpExecutor {
+    fn run_mlp(&self, layer_idx: usize, input: &[f32], rows: usize) -> Vec<f32>;
+}
+
+/// Cached device MLP parameters for every classic DA3-BASE transformer
+/// block. It is a parity-only vertical slice until layer normalization,
+/// attention, and both residual branches can also remain device-resident.
+#[cfg(feature = "cuda-residual-oracle")]
+pub struct CudaMlpExecutor {
+    runtime: vestra_kernels::cuda::CudaRuntime,
+    layers: Vec<CudaMlpLayer>,
+}
+
+#[cfg(feature = "cuda-residual-oracle")]
+struct CudaMlpLayer {
+    fc1: vestra_kernels::cuda::CudaLinearF32,
+    fc2: vestra_kernels::cuda::CudaLinearF32,
+}
+
+#[cfg(feature = "cuda-residual-oracle")]
+impl CudaMlpExecutor {
+    pub fn new(
+        runtime: vestra_kernels::cuda::CudaRuntime,
+        cfg: &ModelConfig,
+        weights: &Weights,
+    ) -> Result<Self, vestra_kernels::cuda::CudaError> {
+        assert_eq!(
+            cfg.ffn_type, "mlp",
+            "CUDA MLP supports classic DA3 MLP only"
+        );
+        let embed = cfg.embed_dim as usize;
+        let hidden = cfg.mlp_hidden as usize;
+        let mut layers = Vec::with_capacity(cfg.depth as usize);
+        for layer_idx in 0..cfg.depth as usize {
+            let fc1 = runtime.prepare_linear_f32(
+                embed,
+                hidden,
+                weights
+                    .get_f32(&wname(layer_idx, "mlp_fc1.weight"))
+                    .unwrap(),
+                weights.get_f32(&wname(layer_idx, "mlp_fc1.bias")).unwrap(),
+                None,
+            )?;
+            let fc2 = runtime.prepare_linear_f32(
+                hidden,
+                embed,
+                weights
+                    .get_f32(&wname(layer_idx, "mlp_fc2.weight"))
+                    .unwrap(),
+                weights.get_f32(&wname(layer_idx, "mlp_fc2.bias")).unwrap(),
+                weights.get_f32(&wname(layer_idx, "ls2")),
+            )?;
+            layers.push(CudaMlpLayer { fc1, fc2 });
+        }
+        Ok(Self { runtime, layers })
+    }
+}
+
+#[cfg(feature = "cuda-residual-oracle")]
+impl MlpExecutor for CudaMlpExecutor {
+    fn run_mlp(&self, layer_idx: usize, input: &[f32], rows: usize) -> Vec<f32> {
+        let layer = &self.layers[layer_idx];
+        let input = self
+            .runtime
+            .upload_f32(input)
+            .expect("CUDA MLP normalized-input upload must succeed");
+        let mut hidden = layer.fc1.run(&input, rows).expect("CUDA FC1 must succeed");
+        self.runtime
+            .gelu_f32_in_place(&mut hidden)
+            .expect("CUDA GELU must succeed");
+        let output = layer.fc2.run(&hidden, rows).expect("CUDA FC2 must succeed");
+        self.runtime
+            .download_f32(&output)
+            .expect("CUDA MLP result download must succeed")
+    }
+}
+
 #[cfg(feature = "cuda-residual-oracle")]
 impl ResidualAddExecutor for vestra_kernels::cuda::CudaRuntime {
     fn add_in_place(&self, destination: &mut [f32], source: &[f32]) {
@@ -438,6 +518,7 @@ pub(crate) fn vit_block_with_views(
     weights: &Weights,
     _backend: &dyn Backend,
     residual_executor: Option<&dyn ResidualAddExecutor>,
+    mlp_executor: Option<&dyn MlpExecutor>,
 ) {
     let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
     assert_eq!(
@@ -491,30 +572,32 @@ pub(crate) fn vit_block_with_views(
     );
     let ln2_elapsed = ln2_started.elapsed();
     let fc1_started = std::time::Instant::now();
-    let h = run_linear(
-        &ln2,
-        n,
-        embed,
-        mlp_hidden,
-        &wname(layer_idx, "mlp_fc1.weight"),
-        &wname(layer_idx, "mlp_fc1.bias"),
-        true,
-        None,
-        weights,
-    );
-    let fc1_elapsed = fc1_started.elapsed();
-    let fc2_started = std::time::Instant::now();
-    let m = run_linear(
-        &h,
-        n,
-        mlp_hidden,
-        embed,
-        &wname(layer_idx, "mlp_fc2.weight"),
-        &wname(layer_idx, "mlp_fc2.bias"),
-        false,
-        Some(&wname(layer_idx, "ls2")),
-        weights,
-    );
+    let m = if let Some(executor) = mlp_executor {
+        executor.run_mlp(layer_idx, &ln2, n)
+    } else {
+        let h = run_linear(
+            &ln2,
+            n,
+            embed,
+            mlp_hidden,
+            &wname(layer_idx, "mlp_fc1.weight"),
+            &wname(layer_idx, "mlp_fc1.bias"),
+            true,
+            None,
+            weights,
+        );
+        run_linear(
+            &h,
+            n,
+            mlp_hidden,
+            embed,
+            &wname(layer_idx, "mlp_fc2.weight"),
+            &wname(layer_idx, "mlp_fc2.bias"),
+            false,
+            Some(&wname(layer_idx, "ls2")),
+            weights,
+        )
+    };
     add_residual(tokens, &m, residual_executor);
     if phase_profile {
         eprintln!(
@@ -522,8 +605,8 @@ pub(crate) fn vit_block_with_views(
             ln1_elapsed.as_secs_f64() * 1e3,
             attention_elapsed.as_secs_f64() * 1e3,
             ln2_elapsed.as_secs_f64() * 1e3,
-            fc1_elapsed.as_secs_f64() * 1e3,
-            fc2_started.elapsed().as_secs_f64() * 1e3,
+            fc1_started.elapsed().as_secs_f64() * 1e3,
+            0.0,
         );
     }
 }
@@ -544,6 +627,7 @@ pub(crate) fn vit_block_with_residual(
     weights: &Weights,
     backend: &dyn Backend,
     residual_executor: Option<&dyn ResidualAddExecutor>,
+    mlp_executor: Option<&dyn MlpExecutor>,
 ) {
     vit_block_with_views(
         tokens,
@@ -557,6 +641,7 @@ pub(crate) fn vit_block_with_residual(
         weights,
         backend,
         residual_executor,
+        mlp_executor,
     );
 }
 
@@ -572,7 +657,7 @@ pub fn vit_block(
     backend: &dyn Backend,
 ) {
     vit_block_with_residual(
-        tokens, n, gh, gw, global, cfg, layer_idx, weights, backend, None,
+        tokens, n, gh, gw, global, cfg, layer_idx, weights, backend, None, None,
     );
 }
 

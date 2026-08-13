@@ -48,7 +48,9 @@
 //! observed on a real GGUF file directly).
 #[cfg(test)]
 use crate::vit_block::vit_block;
-use crate::vit_block::{vit_block_with_residual, vit_block_with_views, ResidualAddExecutor};
+use crate::vit_block::{
+    vit_block_with_residual, vit_block_with_views, MlpExecutor, ResidualAddExecutor,
+};
 use crate::ModelConfig;
 use da_graph::{Backend, Weights};
 use std::io::Write;
@@ -215,6 +217,7 @@ pub struct Backbone<'a> {
     pub weights: &'a Weights,
     pub backend: &'a dyn Backend,
     residual_executor: Option<&'a dyn ResidualAddExecutor>,
+    mlp_executor: Option<&'a dyn MlpExecutor>,
 }
 
 impl<'a> Backbone<'a> {
@@ -224,6 +227,7 @@ impl<'a> Backbone<'a> {
             weights,
             backend,
             residual_executor: None,
+            mlp_executor: None,
         }
     }
 
@@ -239,6 +243,23 @@ impl<'a> Backbone<'a> {
             weights,
             backend,
             residual_executor: Some(residual_executor),
+            mlp_executor: None,
+        }
+    }
+
+    #[cfg(feature = "cuda-residual-oracle")]
+    pub(crate) fn new_with_mlp(
+        cfg: &'a ModelConfig,
+        weights: &'a Weights,
+        backend: &'a dyn Backend,
+        mlp_executor: &'a dyn MlpExecutor,
+    ) -> Self {
+        Self {
+            cfg,
+            weights,
+            backend,
+            residual_executor: None,
+            mlp_executor: Some(mlp_executor),
         }
     }
 
@@ -283,6 +304,7 @@ impl<'a> Backbone<'a> {
                     self.weights,
                     self.backend,
                     self.residual_executor,
+                    self.mlp_executor,
                 );
             }
         }
@@ -368,6 +390,7 @@ impl<'a> Backbone<'a> {
                 self.weights,
                 self.backend,
                 self.residual_executor,
+                self.mlp_executor,
             );
 
             if phase_profile {
@@ -517,6 +540,7 @@ impl<'a> Backbone<'a> {
                     self.weights,
                     self.backend,
                     self.residual_executor,
+                    self.mlp_executor,
                 );
                 for (view_index, view) in views.iter_mut().enumerate() {
                     let start = view_index * n * embed;
@@ -535,6 +559,7 @@ impl<'a> Backbone<'a> {
                         self.weights,
                         self.backend,
                         self.residual_executor,
+                        self.mlp_executor,
                     );
                 }
             }
