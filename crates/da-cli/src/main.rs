@@ -5,6 +5,7 @@
 
 mod bench;
 mod infer;
+mod multi;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -13,6 +14,7 @@ use clap::{Parser, Subcommand};
 
 use crate::bench::{print_bench_report, run_bench, BenchRequest};
 use crate::infer::{run_infer, InferRequest};
+use crate::multi::{run_multi_infer, MultiInferRequest};
 
 #[derive(Parser, Debug)]
 #[command(name = "da", about = "depth-anything.cpp-rs CLI")]
@@ -27,6 +29,8 @@ pub enum Command {
     Infer(InferArgs),
     /// Load a model once, time N inference calls, report median/p95 latency.
     Bench(BenchArgs),
+    /// Run one ordered multi-view depth and pose pass over two or more images.
+    InferMulti(InferMultiArgs),
 }
 
 #[derive(clap::Args, Debug, PartialEq, Eq)]
@@ -60,6 +64,19 @@ pub struct BenchArgs {
     /// Number of untimed warmup iterations run before the timed ones.
     #[arg(long, default_value_t = 1)]
     pub warmup: usize,
+}
+
+#[derive(clap::Args, Debug, PartialEq, Eq)]
+pub struct InferMultiArgs {
+    /// Path to the GGUF model file.
+    #[arg(long)]
+    pub model: PathBuf,
+    /// Ordered input images. Repeat this flag for every view.
+    #[arg(long, required = true)]
+    pub image: Vec<PathBuf>,
+    /// Prefix for `<prefix>_view<N>.pfm` and `<prefix>_view<N>.json` outputs.
+    #[arg(long)]
+    pub out_prefix: PathBuf,
 }
 
 fn main() -> ExitCode {
@@ -98,6 +115,17 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::InferMulti(args) => match run_multi_infer(&MultiInferRequest {
+            model: args.model,
+            images: args.image,
+            out_prefix: args.out_prefix,
+        }) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        },
     }
 }
 
@@ -193,6 +221,30 @@ mod tests {
         assert!(
             result.is_err(),
             "missing required --image should fail to parse"
+        );
+    }
+
+    #[test]
+    fn infer_multi_requires_two_ordered_images() {
+        let cli = Cli::try_parse_from([
+            "da",
+            "infer-multi",
+            "--model",
+            "model.gguf",
+            "--image",
+            "first.png",
+            "--image",
+            "second.png",
+            "--out-prefix",
+            "out/window",
+        ])
+        .expect("two ordered images should parse");
+        let Command::InferMulti(args) = cli.command else {
+            panic!("expected Command::InferMulti");
+        };
+        assert_eq!(
+            args.image,
+            vec![PathBuf::from("first.png"), PathBuf::from("second.png")]
         );
     }
 
