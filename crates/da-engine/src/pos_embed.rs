@@ -233,11 +233,27 @@ pub fn prepare_tokens(
     cache: &mut PosEmbedCache,
     out_tokens: &mut Vec<f32>,
 ) -> (usize, usize) {
-    let embed = cfg.embed_dim as usize;
-
     let mut patch_tokens = Vec::new();
     let (gh, gw) = patch_embed(img_nchw, h, w, cfg, weights, &mut patch_tokens);
+    assemble_tokens_from_patch_tokens(&patch_tokens, gh, gw, cfg, weights, cache, out_tokens);
+    (gh, gw)
+}
+
+/// Adds CLS/register tokens and the cached positional grid to already
+/// projected token-major patch rows. This keeps position-token assembly shared
+/// between CPU patch embedding and a qualified CUDA patch-projection seam.
+pub fn assemble_tokens_from_patch_tokens(
+    patch_tokens: &[f32],
+    gh: usize,
+    gw: usize,
+    cfg: &ModelConfig,
+    weights: &Weights,
+    cache: &mut PosEmbedCache,
+    out_tokens: &mut Vec<f32>,
+) {
+    let embed = cfg.embed_dim as usize;
     let n_patches = gh * gw;
+    assert_eq!(patch_tokens.len(), n_patches * embed);
 
     let cls = weights
         .get_f32(CLS_TOKEN_WEIGHT)
@@ -278,8 +294,6 @@ pub fn prepare_tokens(
     for i in 0..n_patches * embed {
         out_tokens[patch_start + i] += pos[embed + i];
     }
-
-    (gh, gw)
 }
 
 #[cfg(test)]

@@ -46,6 +46,10 @@ use crate::backbone::{
 };
 use crate::config::EngineError;
 use crate::dpt_head::{HeadWorkspace, WinogradFilterCache};
+#[cfg(feature = "cuda-residual-oracle")]
+use crate::patch_embed::CudaPatchEmbedExecutor;
+#[cfg(feature = "cuda-residual-oracle")]
+use crate::pos_embed::assemble_tokens_from_patch_tokens;
 use crate::pos_embed::{prepare_tokens, PosEmbedCache};
 use crate::pose::cam_pose;
 use crate::preprocess::preprocess;
@@ -233,6 +237,8 @@ pub struct Engine {
     cuda_attention: Option<CudaAttentionExecutor>,
     #[cfg(feature = "cuda-residual-oracle")]
     cuda_transformer_tail: Option<CudaTransformerTailExecutor>,
+    #[cfg(feature = "cuda-residual-oracle")]
+    cuda_patch_embed: Option<CudaPatchEmbedExecutor>,
 }
 
 impl Engine {
@@ -267,6 +273,8 @@ impl Engine {
             cuda_attention: None,
             #[cfg(feature = "cuda-residual-oracle")]
             cuda_transformer_tail: None,
+            #[cfg(feature = "cuda-residual-oracle")]
+            cuda_patch_embed: None,
         })
     }
 
@@ -355,6 +363,63 @@ impl Engine {
         self.cuda_transformer_tail.is_some()
     }
 
+    /// Enables the cached device-side NCHW patch lowering and CUBLAS patch
+    /// projection oracle. Positional token assembly remains CPU-owned, so
+    /// this is intentionally not a throughput backend yet.
+    #[cfg(feature = "cuda-residual-oracle")]
+    pub fn enable_cuda_patch_embed_oracle(
+        &mut self,
+        device: usize,
+    ) -> Result<(), vestra_kernels::cuda::CudaError> {
+        let runtime = vestra_kernels::cuda::CudaRuntime::new(device)?;
+        self.cuda_patch_embed = Some(CudaPatchEmbedExecutor::new(
+            runtime,
+            &self.cfg,
+            &self.weights,
+        )?);
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda-residual-oracle")]
+    #[must_use]
+    pub fn cuda_patch_embed_oracle_enabled(&self) -> bool {
+        self.cuda_patch_embed.is_some()
+    }
+
+    fn prepare_tokens(
+        &mut self,
+        chw: &[f32],
+        height: usize,
+        width: usize,
+        out: &mut Vec<f32>,
+    ) -> (usize, usize) {
+        #[cfg(feature = "cuda-residual-oracle")]
+        if let Some(executor) = self.cuda_patch_embed.as_ref() {
+            let (gh, gw, patches) = executor
+                .run(chw, height, width)
+                .expect("CUDA patch embedding oracle must execute");
+            assemble_tokens_from_patch_tokens(
+                &patches,
+                gh,
+                gw,
+                &self.cfg,
+                &self.weights,
+                &mut self.pos_cache,
+                out,
+            );
+            return (gh, gw);
+        }
+        prepare_tokens(
+            chw,
+            height,
+            width,
+            &self.cfg,
+            &self.weights,
+            &mut self.pos_cache,
+            out,
+        )
+    }
+
     fn backbone(&self) -> Backbone<'_> {
         #[cfg(feature = "cuda-residual-oracle")]
         if let Some(executor) = self.cuda_mlp.as_ref() {
@@ -393,15 +458,7 @@ impl Engine {
         let preprocessed = std::time::Instant::now();
 
         let mut tokens = Vec::new();
-        let (gh, gw) = prepare_tokens(
-            &chw,
-            ph,
-            pw,
-            &self.cfg,
-            &self.weights,
-            &mut self.pos_cache,
-            &mut tokens,
-        );
+        let (gh, gw) = self.prepare_tokens(&chw, ph, pw, &mut tokens);
         let tokens_prepared = std::time::Instant::now();
 
         let backbone = self.backbone();
@@ -552,15 +609,7 @@ impl Engine {
             }
 
             let mut tokens = Vec::new();
-            let (gh, gw) = prepare_tokens(
-                &chw,
-                ph,
-                pw,
-                &self.cfg,
-                &self.weights,
-                &mut self.pos_cache,
-                &mut tokens,
-            );
+            let (gh, gw) = self.prepare_tokens(&chw, ph, pw, &mut tokens);
             if let Some(expected) = grid_shape {
                 debug_assert_eq!((gh, gw), expected);
             } else {

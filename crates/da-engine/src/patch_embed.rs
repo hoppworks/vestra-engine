@@ -3,6 +3,9 @@ use da_graph::Weights;
 use vestra_kernels::conv::conv2d;
 use vestra_kernels::gemm::FaerGemm;
 
+#[cfg(feature = "cuda-residual-oracle")]
+use vestra_kernels::cuda::{CudaError, CudaLinearF32, CudaRuntime};
+
 /// Weight-tensor names for the conv-patchify projection.
 ///
 /// These are the *real* GGUF converter names, confirmed from two independent
@@ -113,6 +116,91 @@ pub fn patch_embed(
     }
 
     (gh, gw)
+}
+
+/// Cached CUDA parameters for DA3's non-overlapping patch projection.
+///
+/// The CUDA path first lowers NCHW to patch rows on the device, then runs one
+/// cached CUBLAS projection. The raw convolution filter is OIHW while CUBLAS
+/// consumes `K×N`, so the one-time constructor transposes it explicitly.
+/// This is a numerical parity seam until position-token assembly and the
+/// following backbone lifetime are also device-resident.
+#[cfg(feature = "cuda-residual-oracle")]
+pub struct CudaPatchEmbedExecutor {
+    runtime: CudaRuntime,
+    projection: CudaLinearF32,
+    patch: usize,
+    embed: usize,
+}
+
+#[cfg(feature = "cuda-residual-oracle")]
+impl CudaPatchEmbedExecutor {
+    pub fn new(
+        runtime: CudaRuntime,
+        cfg: &ModelConfig,
+        weights: &Weights,
+    ) -> Result<Self, CudaError> {
+        let patch = cfg.patch_size as usize;
+        let embed = cfg.embed_dim as usize;
+        let input_features = CHANNELS * patch * patch;
+        let filter = weights
+            .get_f32(PATCH_EMBED_WEIGHT)
+            .unwrap_or_else(|| panic!("missing weight tensor {PATCH_EMBED_WEIGHT:?}"));
+        let bias = weights
+            .get_f32(PATCH_EMBED_BIAS)
+            .unwrap_or_else(|| panic!("missing weight tensor {PATCH_EMBED_BIAS:?}"));
+        assert_eq!(filter.len(), embed * input_features);
+        assert_eq!(bias.len(), embed);
+        let mut projection = vec![0.0_f32; input_features * embed];
+        for output in 0..embed {
+            for input in 0..input_features {
+                projection[input * embed + output] = filter[output * input_features + input];
+            }
+        }
+        Ok(Self {
+            projection: runtime.prepare_linear_f32(
+                input_features,
+                embed,
+                &projection,
+                bias,
+                None,
+            )?,
+            runtime,
+            patch,
+            embed,
+        })
+    }
+
+    /// Executes CUDA patch lowering and projection, then explicitly downloads
+    /// token-major output for the still-CPU position-token assembly path.
+    pub fn run(
+        &self,
+        image_nchw: &[f32],
+        height: usize,
+        width: usize,
+    ) -> Result<(usize, usize, Vec<f32>), CudaError> {
+        if height == 0
+            || width == 0
+            || height % self.patch != 0
+            || width % self.patch != 0
+            || image_nchw.len() != CHANNELS * height * width
+        {
+            return Err(CudaError::Kernel(format!(
+                "invalid CUDA patch embedding image shape length={}, height={height}, width={width}, patch={}",
+                image_nchw.len(), self.patch
+            )));
+        }
+        let gh = height / self.patch;
+        let gw = width / self.patch;
+        let image = self.runtime.upload_f32(image_nchw)?;
+        let patches = self
+            .runtime
+            .patchify_nchw_f32(&image, height, width, self.patch, CHANNELS)?;
+        let tokens = self.projection.run(&patches, gh * gw)?;
+        let tokens = self.runtime.download_f32(&tokens)?;
+        debug_assert_eq!(tokens.len(), gh * gw * self.embed);
+        Ok((gh, gw, tokens))
+    }
 }
 
 #[cfg(test)]
