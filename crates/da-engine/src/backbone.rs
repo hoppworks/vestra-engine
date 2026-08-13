@@ -88,6 +88,106 @@ pub struct MultiViewBackboneOutputs {
     pub cam_tokens: Vec<Vec<Vec<f32>>>,
 }
 
+/// Selects PR #2's saddle-balanced reference view from local CLS features.
+///
+/// Each row is one view's CLS vector. The selected view minimizes the sum of
+/// distances to the normalized midpoints of mean cosine similarity, vector
+/// norm, and unbiased normalized-feature variance. Ties retain the earliest
+/// view, matching the C++ `<` comparison.
+#[must_use]
+pub fn select_reference_view_saddle(cls: &[Vec<f32>]) -> usize {
+    if cls.len() <= 1 {
+        return 0;
+    }
+    let embed = cls[0].len();
+    assert!(
+        embed > 1,
+        "saddle selection needs at least two CLS channels"
+    );
+    assert!(
+        cls.iter().all(|row| row.len() == embed),
+        "all CLS feature rows must have the same width"
+    );
+
+    let mut norm = vec![0.0f64; cls.len()];
+    let mut normalized = vec![vec![0.0f64; embed]; cls.len()];
+    for (view, row) in cls.iter().enumerate() {
+        let magnitude = row
+            .iter()
+            .map(|&value| f64::from(value) * f64::from(value))
+            .sum::<f64>()
+            .sqrt();
+        norm[view] = magnitude;
+        let inverse = if magnitude > 0.0 {
+            1.0 / magnitude
+        } else {
+            0.0
+        };
+        for (dst, &value) in normalized[view].iter_mut().zip(row) {
+            *dst = f64::from(value) * inverse;
+        }
+    }
+
+    let mut similarity = vec![0.0f64; cls.len()];
+    let mut variance = vec![0.0f64; cls.len()];
+    for view in 0..cls.len() {
+        for other in 0..cls.len() {
+            if other != view {
+                similarity[view] += normalized[view]
+                    .iter()
+                    .zip(&normalized[other])
+                    .map(|(left, right)| left * right)
+                    .sum::<f64>();
+            }
+        }
+        similarity[view] /= (cls.len() - 1) as f64;
+        let mean = normalized[view].iter().sum::<f64>() / embed as f64;
+        variance[view] = normalized[view]
+            .iter()
+            .map(|value| {
+                let delta = value - mean;
+                delta * delta
+            })
+            .sum::<f64>()
+            / (embed - 1) as f64;
+    }
+
+    normalize_zero_one(&mut similarity);
+    normalize_zero_one(&mut norm);
+    normalize_zero_one(&mut variance);
+
+    let mut best = 0;
+    let mut best_balance = f64::INFINITY;
+    for view in 0..cls.len() {
+        let balance = (similarity[view] - 0.5).abs()
+            + (norm[view] - 0.5).abs()
+            + (variance[view] - 0.5).abs();
+        if balance < best_balance {
+            best_balance = balance;
+            best = view;
+        }
+    }
+    best
+}
+
+fn normalize_zero_one(values: &mut [f64]) {
+    let minimum = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let maximum = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let denominator = maximum - minimum + 1e-8;
+    for value in values {
+        *value = (*value - minimum) / denominator;
+    }
+}
+
+#[must_use]
+pub fn reference_first_order(view_count: usize, reference: usize) -> Vec<usize> {
+    assert!(reference < view_count);
+    let mut order = Vec::with_capacity(view_count);
+    order.push(reference);
+    order.extend((0..view_count).filter(|&view| view != reference));
+    order
+}
+
 /// Owns nothing — just bundles the `cfg`/`weights`/`backend` a full
 /// backbone forward pass needs, borrowed for the duration of `forward`.
 pub struct Backbone<'a> {
@@ -779,5 +879,22 @@ mod tests {
 
         assert_ne!(near_out.feats[0][0], far_out.feats[0][0]);
         assert_ne!(near_pair[0], far_pair[0]);
+    }
+
+    #[test]
+    fn saddle_reference_matches_locked_cpp_formula() {
+        let cls = vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.7, 0.6, 0.1, 0.0],
+            vec![0.0, 1.0, 0.0, 0.0],
+            vec![-1.0, 0.0, 0.0, 0.0],
+        ];
+        assert_eq!(select_reference_view_saddle(&cls), 0);
+    }
+
+    #[test]
+    fn reference_order_moves_reference_to_front_without_losing_views() {
+        assert_eq!(reference_first_order(5, 3), vec![3, 0, 1, 2, 4]);
+        assert_eq!(reference_first_order(3, 0), vec![0, 1, 2]);
     }
 }

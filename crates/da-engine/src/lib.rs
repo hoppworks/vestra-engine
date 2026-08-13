@@ -10,8 +10,8 @@ mod uv_embed;
 mod vit_block;
 
 pub use backbone::{
-    Backbone, BackboneOutputs, MultiViewBackboneOutputs, CAMERA_TOKEN_WEIGHT, VIT_NORM_BIAS,
-    VIT_NORM_WEIGHT,
+    reference_first_order, select_reference_view_saddle, Backbone, BackboneOutputs,
+    MultiViewBackboneOutputs, CAMERA_TOKEN_WEIGHT, VIT_NORM_BIAS, VIT_NORM_WEIGHT,
 };
 pub use config::{EngineError, ModelConfig};
 pub use dpt_head::{
