@@ -2,14 +2,22 @@
 
 Vestra Engine's automatic multi-view path is accepted only when it matches
 the pinned `localai-org/depth-anything.cpp` PR #2 revision recorded by Vestra.
-The compared work is identical: same GGUF, ordered input images, production
-resize path, view count, and F32 precision.
+The compared work is identical: same GGUF, ordered **canonical decoded RGB
+frames**, production resize path, view count, and F32 precision. JPEG decoding
+is deliberately outside this contract: different decoders can produce
+different RGB pixels before inference. Use FFmpeg to create raw PPM fixtures
+for both arms:
+
+```bash
+ffmpeg -i frame-00.jpg -pix_fmt rgb24 /tmp/frame-00.ppm
+ffmpeg -i frame-01.jpg -pix_fmt rgb24 /tmp/frame-01.ppm
+```
 
 Build the pinned C++ checkout, then produce the reference artifacts:
 
 ```bash
 da3-cli depth --model depth-anything-base-f32.gguf \
-  --input frame-00.png --input frame-01.png \
+  --input /tmp/frame-00.ppm --input /tmp/frame-01.ppm \
   --out-prefix /tmp/cpp-window
 ```
 
@@ -18,7 +26,7 @@ Run the equivalent Vestra Engine pass:
 ```bash
 cargo run -p vestra-cli -- infer-multi \
   --model depth-anything-base-f32.gguf \
-  --image frame-00.png --image frame-01.png \
+  --image /tmp/frame-00.ppm --image /tmp/frame-01.ppm \
   --out-prefix /tmp/rust-window
 ```
 
@@ -43,8 +51,9 @@ view makes the run fail.
 ## Diagnosing a failed window
 
 Set `VESTRA_TRACE_DIR` for a temporary instrumented C++ oracle and the Vestra
-Engine invocation. Both write `block-0` through `block-11` tensors in
-`[view][token][channel]` F32 order. Locate the first divergent block with:
+Engine invocation. Both write an `input` tensor and `block-0` through
+`block-11` tensors in `[view][token][channel]` F32 order. Locate the first
+divergent block with:
 
 ```bash
 python3 scripts/compare_block_trace.py \

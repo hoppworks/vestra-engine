@@ -65,11 +65,11 @@ pub const VIT_NORM_BIAS: &str = "vit.norm.bias";
 /// the first `embed_dim` floats of the tensor's data).
 pub const CAMERA_TOKEN_WEIGHT: &str = "vit.camera_token";
 
-fn trace_multi_view_block(trace_dir: Option<&PathBuf>, layer: usize, views: &[Vec<f32>]) {
+fn trace_multi_view_tensor(trace_dir: Option<&PathBuf>, name: &str, views: &[Vec<f32>]) {
     let Some(trace_dir) = trace_dir else {
         return;
     };
-    let path = trace_dir.join(format!("rust-block-{layer}.f32"));
+    let path = trace_dir.join(format!("rust-{name}.f32"));
     let mut file = std::fs::File::create(&path).unwrap_or_else(|error| {
         panic!("cannot create multi-view trace {}: {error}", path.display())
     });
@@ -438,9 +438,6 @@ impl<'a> Backbone<'a> {
         let n_special = 1 + cfg.num_register as usize;
         assert_eq!(n, n_special + gh * gw);
 
-        let mut local_x = views.to_vec();
-        let mut feats = vec![vec![None; view_count]; out_layers.len()];
-        let mut cam_tokens = vec![vec![None; view_count]; out_layers.len()];
         let trace_dir = std::env::var_os("VESTRA_TRACE_DIR").map(PathBuf::from);
         if let Some(trace_dir) = &trace_dir {
             std::fs::create_dir_all(trace_dir).unwrap_or_else(|error| {
@@ -450,6 +447,10 @@ impl<'a> Backbone<'a> {
                 )
             });
         }
+        trace_multi_view_tensor(trace_dir.as_ref(), "input", views);
+        let mut local_x = views.to_vec();
+        let mut feats = vec![vec![None; view_count]; out_layers.len()];
+        let mut cam_tokens = vec![vec![None; view_count]; out_layers.len()];
 
         for layer_idx in 0..cfg.depth as usize {
             if cfg.alt_start >= 0 && layer_idx == cfg.alt_start as usize {
@@ -534,7 +535,7 @@ impl<'a> Backbone<'a> {
             if !global {
                 local_x.clone_from_slice(views);
             }
-            trace_multi_view_block(trace_dir.as_ref(), layer_idx, views);
+            trace_multi_view_tensor(trace_dir.as_ref(), &format!("block-{layer_idx}"), views);
         }
 
         let feats = feats
