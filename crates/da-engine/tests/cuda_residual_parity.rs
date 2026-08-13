@@ -189,6 +189,76 @@ fn cuda_mlp_slice_matches_cpu_ordered_multiview() {
     }
 }
 
+/// Exercises PR #2's local/global multi-view attention with the CUDA
+/// attention branch enabled for every qualified block.
+#[test]
+fn cuda_attention_slice_matches_cpu_ordered_multiview() {
+    let (Some(model), Some(image)) = (
+        std::env::var_os("VESTRA_CUDA_MODEL"),
+        std::env::var_os("VESTRA_CUDA_IMAGE"),
+    ) else {
+        return;
+    };
+    let paths = std::env::var("VESTRA_CUDA_IMAGES")
+        .ok()
+        .map(|value| value.split(':').map(PathBuf::from).collect::<Vec<_>>())
+        .filter(|paths| paths.len() >= 2)
+        .unwrap_or_else(|| vec![PathBuf::from(&image), PathBuf::from(&image)]);
+    let images = paths
+        .iter()
+        .map(|path| {
+            let decoded = image::open(path)
+                .expect("configured CUDA parity image must decode")
+                .to_rgb8();
+            (
+                decoded.width() as usize,
+                decoded.height() as usize,
+                decoded.into_raw(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let inputs = images
+        .iter()
+        .map(|(width, height, rgb)| ViewInput {
+            rgb_hwc_u8: rgb,
+            h: *height,
+            w: *width,
+        })
+        .collect::<Vec<_>>();
+
+    let mut cpu = Engine::load(PathBuf::from(&model).as_path(), QuantPref::PreferF32)
+        .expect("CPU Engine must load the configured F32 model");
+    let expected = cpu
+        .infer_multi_view_ordered(&inputs)
+        .expect("CPU ordered multiview inference must succeed");
+    let mut cuda = Engine::load(PathBuf::from(model).as_path(), QuantPref::PreferF32)
+        .expect("CUDA parity Engine must load the configured F32 model");
+    cuda.enable_cuda_attention_oracle(0)
+        .expect("CUDA attention runtime must initialize and cache parameters");
+    let actual = cuda
+        .infer_multi_view_ordered(&inputs)
+        .expect("CUDA ordered multiview inference must succeed");
+    assert_eq!(actual.reference_view_index, expected.reference_view_index);
+    assert_eq!(actual.views.len(), expected.views.len());
+    for (index, (expected, actual)) in expected.views.iter().zip(&actual.views).enumerate() {
+        assert_eq!(
+            (actual.w, actual.h),
+            (expected.w, expected.h),
+            "view {index}"
+        );
+        assert_close(
+            &format!("attention view {index} depth"),
+            &expected.depth,
+            &actual.depth,
+        );
+        assert_close(
+            &format!("attention view {index} confidence"),
+            &expected.conf,
+            &actual.conf,
+        );
+    }
+}
+
 /// Exercises the PR #2-style ordered multi-view path. Set
 /// `VESTRA_CUDA_IMAGES` to two or more colon-separated image paths; without
 /// it the configured single image is duplicated solely to keep this fixture
