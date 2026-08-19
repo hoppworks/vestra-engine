@@ -12,7 +12,7 @@ studio live in Vestra itself.
 - single-view depth, confidence, and camera pose
 - ordered multi-view local/global transformer execution
 - optimized CPU execution on AVX-512 x86-64
-- a future native CUDA backend through `vestra-kernels`
+- opt-in native CUDA parity slices through `vestra-kernels`
 
 The public product name is Vestra Engine. Legacy `da-*` source-directory and
 internal dependency aliases are retained temporarily to preserve the verified
@@ -20,7 +20,7 @@ code history while public Cargo packages use `vestra-*` names.
 
 ## Multi-view status
 
-The first parity tracer bullet is implemented:
+The ordered multi-view path is implemented and independently qualified:
 
 - local blocks execute independently per view;
 - global blocks attend over one view-major flattened sequence;
@@ -28,16 +28,39 @@ The first parity tracer bullet is implemented:
 - RoPE special-token boundaries repeat correctly for every view;
 - the `S=1` ordered multi-view path is bitwise equal to single-view execution;
 - a synthetic test proves that a second view affects the first view at global
-  attention layers.
+  attention layers;
+- the automatic path performs the preliminary local CLS pass, selects the
+  saddle-balanced reference view for eligible windows, runs reference-first,
+  and restores the caller's original view order;
+- canonical RGB24 C++ oracle comparisons are accepted for `S=2`, `S=3`, and
+  `S=12`, including depth, confidence, W2C extrinsics, and intrinsics.
 
-For `S>=3`, the automatic path now runs the preliminary local CLS pass,
-selects the saddle-balanced reference view, performs the reference-first
-forward pass, and restores the caller's original view order. Real-model C++
-parity for `S=2,3,12`, CUDA, and streaming-window orchestration remain open
-work.
+| Window | Worst depth r | Worst depth MAE | Worst W2C MAE | Worst intrinsics error |
+|---|---:|---:|---:|---:|
+| `S=2` | 0.999999999982 | 0.0000015403 | 0.0000019950 | 0.003965 px |
+| `S=3` | 0.999999999985 | 0.0000026587 | 0.0000082050 | 0.004754 px |
+| `S=12` | 0.999999999741 | 0.0000211174 | 0.0000199768 | 0.032229 px |
 
-The repeatable C++ comparison commands and thresholds are in
-[the multi-view oracle gate](docs/MULTIVIEW_ORACLE.md).
+The canonical-input contract, thresholds, provenance, and repeatable commands
+are in [the multi-view oracle gate](docs/MULTIVIEW_ORACLE.md). Streaming-window
+scheduling, cross-window registration, and fusion belong to the Vestra product
+repository rather than this inference engine.
+
+## CUDA status
+
+The `cuda-residual-oracle` feature is a native CUDA integration and parity
+surface, not a production speed backend. On an RTX 5080 it has qualified:
+
+- device-side patch lowering and cached patch projection;
+- a device-resident transformer tail from the first Q/K-normalized block
+  through the final block;
+- single-image and ordered multi-view agreement with the CPU F32 path.
+
+Preprocessing, early token preparation and transformer blocks, feature
+captures, DPT, and pose still execute on or cross through the CPU. CUDA is
+therefore opt-in, is not selected by the product CLI, and carries no current
+end-to-end performance claim. The executable gates live in
+[`cuda_residual_parity.rs`](crates/da-engine/tests/cuda_residual_parity.rs).
 
 ## CPU-F32 baseline
 
@@ -74,11 +97,13 @@ the benchmark bundle rather than hidden in this README.
 - `vestra-kernels`: qualified CPU/CUDA kernels
 - `vestra`: video reconstruction, scene format, local service, CLI, and studio
 
-## Development dependency
+## Reproducible dependency
 
-The checked-in Cargo configuration uses a sibling `vestra-kernels` checkout as
-a development patch while the package is prepared for publication. This is not
-a source copy: it is the sole kernel implementation. See the
+The checked-in Cargo configuration resolves `vestra-kernels` from an exact
+Git revision. A clone therefore builds without a sibling checkout while every
+engine revision still names the kernel source it qualified. Contributors may
+use a local Cargo source patch while changing both repositories; that override
+must never replace the committed revision. See the
 [repository split migration](docs/REPOSITORY_SPLIT.md) and
 [ADR-001](docs/ADR-001-engine-kernel-repository-split.md) for the boundary and
 release requirement. The exact local and benchmark identities are recorded in

@@ -58,9 +58,6 @@ impl<'a> Cursor<'a> {
         let v = u64::from_le_bytes(self.take(8)?.try_into().unwrap());
         Ok(v)
     }
-    fn i32(&mut self) -> Result<i32, GgufError> {
-        Ok(self.u32()? as i32)
-    }
     fn take(&mut self, n: usize) -> Result<&'a [u8], GgufError> {
         if self.p + n > self.b.len() {
             return Err(GgufError::Malformed("eof".into()));
@@ -227,10 +224,8 @@ impl GgufFile {
                 alignment = c.u32()? as u64;
                 // Store general.alignment as a normal KV entry
                 kv.push((key, MetaValue::U32(alignment as u32)));
-            } else {
-                if let Some(val) = read_kv_value(&mut c, vtype)? {
-                    kv.push((key, val));
-                }
+            } else if let Some(val) = read_kv_value(&mut c, vtype)? {
+                kv.push((key, val));
                 // If read_kv_value returns None (unsupported but skipped type), don't insert entry
             }
         }
@@ -314,7 +309,7 @@ impl GgufFile {
                     .collect()
             }
             GGML_Q8_0 => {
-                if n % QK8_0 != 0 {
+                if n / QK8_0 * QK8_0 != n {
                     return Err(GgufError::Malformed(format!(
                         "tensor '{}' has {} elements, not a multiple of block size {} (QK8_0)",
                         name, n, QK8_0
@@ -351,7 +346,7 @@ impl GgufFile {
         let n: usize = ti.dims.iter().map(|&d| d as usize).product();
         let base = self.data_start + ti.offset as usize;
         let bytes = self.raw();
-        if n % QK8_0 != 0 {
+        if n / QK8_0 * QK8_0 != n {
             return Err(GgufError::Malformed(format!(
                 "tensor '{}' has {} elements, not a multiple of block size {} (QK8_0)",
                 name, n, QK8_0
@@ -585,7 +580,7 @@ mod tests {
 
         // Data block: provide some bytes (even though we'll error before reading them)
         // For 33 elements at Q8_0, we'd need ceil(33/32)*34 = 2*34 = 68 bytes
-        buf.extend_from_slice(&vec![0u8; 68]);
+        buf.extend_from_slice(&[0u8; 68]);
 
         // Write buffer to temp file and open it
         let temp_path = std::env::temp_dir().join("test_q8_0_misaligned.gguf");

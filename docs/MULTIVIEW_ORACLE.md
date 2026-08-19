@@ -1,5 +1,25 @@
 # Multi-view C++ oracle gate
 
+## Accepted canonical-input record
+
+The production path passed the pinned C++ oracle on the AMD Ryzen 9 9950X
+Workhorse with identical FFmpeg-decoded RGB24 PPM inputs, DA3-BASE F32, and
+504×336 model output. Every view passed the gates below.
+
+| Window | Views | Worst depth r | Worst depth MAE | Worst W2C MAE | Worst intrinsics error |
+|---|---:|---:|---:|---:|---:|
+| `S=2` | 2 | 0.999999999982 | 0.0000015403 | 0.0000019950 | 0.003965 px |
+| `S=3` | 3 | 0.999999999985 | 0.0000026587 | 0.0000082050 | 0.004754 px |
+| `S=12` | 12 | 0.999999999741 | 0.0000211174 | 0.0000199768 | 0.032229 px |
+
+The accepted run used C++ PR head
+`f56e9be43a22c12ef575584d2fa57a6a5d5be7ae`, Engine revision
+`1562f8b70a1b35a9908feb88eaa38577b92f2a2a`, and Kernels revision
+`bde198958348fcb7a0a294e0d05cd8f2f7e93c5b`. The durable product-level record
+is [published with Vestra](https://github.com/hoppworks/vestra/blob/main/docs/validation/MULTIVIEW_S2_2026-08-13.md).
+
+## Reproduction contract
+
 Vestra Engine's automatic multi-view path is accepted only when it matches
 the pinned `localai-org/depth-anything.cpp` PR #2 revision recorded by Vestra.
 The compared work is identical: same GGUF, ordered **canonical decoded RGB

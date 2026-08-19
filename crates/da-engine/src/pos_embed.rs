@@ -284,7 +284,7 @@ pub fn assemble_tokens_from_patch_tokens(
         out_tokens[embed..embed + rt.len()].copy_from_slice(rt);
     }
     let patch_start = n_special * embed;
-    out_tokens[patch_start..patch_start + n_patches * embed].copy_from_slice(&patch_tokens);
+    out_tokens[patch_start..patch_start + n_patches * embed].copy_from_slice(patch_tokens);
 
     // Add cached, bicubically-interpolated pos-embed to CLS + patch rows only.
     let pos = cache.get_or_build(gh, gw, cfg, weights);

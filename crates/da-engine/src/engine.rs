@@ -684,14 +684,10 @@ impl Engine {
     }
 
     /// Runs the full depth+pose pipeline on one raw HWC `u8` image:
-    /// `preprocess` -> `prepare_tokens` (patch_embed + CLS/register prepend
-    /// + pos-embed add) -> `Backbone::forward` (the `cfg.depth`-layer ViT
-    /// stack, capturing `cfg.out_layers`' `feat`/`cam_token` outputs) ->
-    /// `dpt_head` (dense depth/conf) + `cam_pose` (camera extrinsics/
-    /// intrinsics, from the LAST out-layer's `cam_token` — for DA3-BASE's
-    /// `out_layers = [5,7,9,11]`, that's layer 11, the final/deepest
-    /// captured layer, matching `../src/depth_anything3.cpp`'s use of the
-    /// backbone's last `cam_token` output for pose regression).
+    /// The stages are `preprocess`, `prepare_tokens` (patch embedding plus
+    /// CLS/register and position tokens), `Backbone::forward`, `dpt_head`,
+    /// and `cam_pose`. The pose uses the final captured out-layer camera
+    /// token, matching the C++ reference.
     ///
     /// Returns `Result<InferOut, EngineError>` rather than the task brief's
     /// literal bare `InferOut` return type: `cam_pose` already returns

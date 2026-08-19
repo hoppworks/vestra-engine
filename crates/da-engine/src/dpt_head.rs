@@ -422,6 +422,7 @@ fn feature_fusion(
 /// - If any `feats[s].len()` isn't a multiple of the expected channel count
 ///   or does not match the patch grid derived from `(h, w)`.
 /// - If a required `head.*` weight tensor is missing from `weights`.
+#[allow(clippy::too_many_arguments)]
 fn dpt_head_impl(
     feats: &[Vec<f32>],
     h: usize,
@@ -537,7 +538,7 @@ fn dpt_head_impl(
         if cfg.head_pos_embed {
             let uv = cache.get_or_build_with_aspect(grid_h, grid_w, oc[s], target_aspect);
             debug_assert_eq!(uv.len(), projected.len());
-            Kernels::detect().add(&mut projected, &uv);
+            Kernels::detect().add(&mut projected, uv);
         }
 
         // resize_layers[s]
@@ -838,7 +839,7 @@ fn dpt_head_impl(
         bilinear_resize_align_corners(&fused, feat_half, fh, fw, h, w, &mut feat_map);
         if cfg.head_pos_embed {
             let uv = cache.get_or_build(h, w, feat_half);
-            Kernels::detect().add(&mut feat_map, &uv);
+            Kernels::detect().add(&mut feat_map, uv);
         }
         let filter =
             wino_cache.get_or_prepare_f4(weights, "head.scratch.out2a.weight", feat_half, 32);
@@ -875,7 +876,7 @@ fn dpt_head_impl(
         if cfg.head_pos_embed {
             let uv = cache.get_or_build(h, w, feat_half);
             debug_assert_eq!(uv.len(), feat_map.len());
-            Kernels::detect().add(&mut feat_map, &uv);
+            Kernels::detect().add(&mut feat_map, uv);
         }
         conv3x3_winograd_f2_prepared(
             &feat_map,
@@ -1001,6 +1002,7 @@ pub fn dpt_head(
 /// Production DPT route with an engine-owned activation workspace.  The
 /// public debug route deliberately does not use this pool so captured
 /// intermediates retain normal ownership.
+#[allow(clippy::too_many_arguments)]
 pub fn dpt_head_with_workspace(
     feats: &[Vec<f32>],
     h: usize,
@@ -1144,9 +1146,9 @@ mod tests {
             put("head.norm.bias".to_string(), c_in, &mut w);
         }
 
-        for s in 0..4 {
-            put(format!("head.proj.{s}.weight"), oc[s] * c_in, &mut w);
-            put(format!("head.proj.{s}.bias"), oc[s], &mut w);
+        for (s, &channels) in oc.iter().enumerate() {
+            put(format!("head.proj.{s}.weight"), channels * c_in, &mut w);
+            put(format!("head.proj.{s}.bias"), channels, &mut w);
         }
         put(
             "head.resize.0.weight".to_string(),
@@ -1167,10 +1169,10 @@ mod tests {
         );
         put("head.resize.3.bias".to_string(), oc[3], &mut w);
 
-        for s in 0..4 {
+        for (s, &channels) in oc.iter().enumerate() {
             put(
                 format!("head.scratch.layer{}_rn.weight", s + 1),
-                FUSION_C * oc[s] * 3 * 3,
+                FUSION_C * channels * 3 * 3,
                 &mut w,
             );
         }

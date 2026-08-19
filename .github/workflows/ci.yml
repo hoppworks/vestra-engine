@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  quality:
+    name: Format, lint, and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out Vestra Engine
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Report pinned toolchain
+        run: rustc --version --verbose
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint all targets and features
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Test workspace
+        run: cargo test --workspace --all-features

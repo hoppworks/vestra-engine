@@ -398,8 +398,8 @@ mod tests {
         assert_eq!(cfg.img_resize_mode, "bicubic");
         assert_eq!(cfg.cam_dim_in, 8);
         assert_eq!(cfg.alt_start, -1);
-        assert_eq!(cfg.cat_token, true);
-        assert_eq!(cfg.head_pos_embed, true);
+        assert!(cfg.cat_token);
+        assert!(cfg.head_pos_embed);
     }
 
     #[test]
@@ -407,7 +407,7 @@ mod tests {
         // full_valid_entries() never includes `depthanything3.head.pos_embed`.
         let g = build_gguf(&full_valid_entries());
         let cfg = ModelConfig::from_gguf(&g).expect("should parse valid config");
-        assert_eq!(cfg.head_pos_embed, true);
+        assert!(cfg.head_pos_embed);
     }
 
     #[test]
@@ -432,7 +432,7 @@ mod tests {
         // full_valid_entries() never includes `depthanything3.vit.cat_token`.
         let g = build_gguf(&full_valid_entries());
         let cfg = ModelConfig::from_gguf(&g).expect("should parse valid config");
-        assert_eq!(cfg.cat_token, true);
+        assert!(cfg.cat_token);
     }
 
     #[test]
@@ -502,7 +502,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cfg = ModelConfig::from_gguf(&g).expect("should parse valid config");
-        assert_eq!(cfg.cat_token, false);
+        assert!(!cfg.cat_token);
     }
 
     #[test]

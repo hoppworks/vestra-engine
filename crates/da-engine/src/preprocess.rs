@@ -608,7 +608,7 @@ mod tests {
         assert_eq!(out.len(), 3 * 8 * 8);
 
         // R channel; the other channels use the same fixture values.
-        assert_eq!(out[0 * 8 + 3], 0.0, "top padding must be black");
+        assert_eq!(out[3], 0.0, "top padding must be black");
         assert_eq!(out[2 * 8 + 3], 1.0, "first content row must preserve white");
         assert_eq!(out[6 * 8 + 3], 0.0, "bottom padding must be black");
     }

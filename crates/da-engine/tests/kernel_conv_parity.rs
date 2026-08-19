@@ -2,9 +2,8 @@
 //!
 //! Volle numerische Parity gegen die DPT-Head Dumps (`proj0_*`, `convs3_*`,
 //! `convt0_*`) braucht die conv/conv_transpose *Gewichte* aus dem Modell-GGUF,
-//! das in dieser Umgebung nicht vorliegt (kein `dumps/*.gguf` mit Modellgewichten
-//! - nur Aktivierungs-Dumps). Das wird erst in Task 20 (DPT-Head ueber die
-//! Engine) scharfgeschaltet.
+//! das in dieser Umgebung nicht vorliegt; vorhanden sind nur Aktivierungs-Dumps.
+//! Das wird erst in Task 20 (DPT-Head ueber die Engine) scharfgeschaltet.
 //!
 //! Was hier tatsaechlich verifiziert wird:
 //! 1. Mechanische Korrektheit von `conv2d` (im2col+GEMM) und

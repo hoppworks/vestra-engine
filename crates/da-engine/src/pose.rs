@@ -196,11 +196,11 @@ fn decode(pe: &[f32; 9], h: usize, w: usize) -> ([f32; 12], [f32; 9]) {
     let fy = (h as f32 / 2.0) / (fov_h / 2.0).tan().max(1e-6);
     let fx = (w as f32 / 2.0) / (fov_w / 2.0).tan().max(1e-6);
     let mut intrinsics = [0f32; 9];
-    intrinsics[0 * 3 + 0] = fx;
-    intrinsics[0 * 3 + 2] = w as f32 / 2.0;
-    intrinsics[1 * 3 + 1] = fy;
-    intrinsics[1 * 3 + 2] = h as f32 / 2.0;
-    intrinsics[2 * 3 + 2] = 1.0;
+    intrinsics[0] = fx;
+    intrinsics[2] = w as f32 / 2.0;
+    intrinsics[4] = fy;
+    intrinsics[5] = h as f32 / 2.0;
+    intrinsics[8] = 1.0;
 
     // affine_inverse(c2w) = [R^T | -R^T @ T]
     let mut rt = [[0f32; 3]; 3];
@@ -408,15 +408,15 @@ mod tests {
             let r = r_from_pe(&pe);
             // R @ R^T
             let mut rrt = [[0f32; 3]; 3];
-            for i in 0..3 {
-                for j in 0..3 {
-                    rrt[i][j] = (0..3).map(|k| r[i][k] * r[j][k]).sum();
+            for (i, row) in rrt.iter_mut().enumerate() {
+                for (j, value) in row.iter_mut().enumerate() {
+                    *value = (0..3).map(|k| r[i][k] * r[j][k]).sum();
                 }
             }
-            for i in 0..3 {
-                for j in 0..3 {
+            for (i, row) in rrt.iter().enumerate() {
+                for (j, value) in row.iter().enumerate() {
                     let expected = if i == j { 1.0 } else { 0.0 };
-                    approx(rrt[i][j], expected, 1e-4);
+                    approx(*value, expected, 1e-4);
                 }
             }
         }

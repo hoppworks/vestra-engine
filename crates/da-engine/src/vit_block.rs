@@ -789,9 +789,8 @@ fn run_attention(
     let direct_qkv =
         vestra_kernels::qkv_f32_da3_base(ln1_out, qkv_weight, qkv_bias, &mut q, &mut k, &mut v);
     let qkv_elapsed = qkv_started.elapsed();
-    let pack_elapsed;
-    if direct_qkv {
-        pack_elapsed = std::time::Duration::ZERO;
+    let pack_elapsed = if direct_qkv {
+        std::time::Duration::ZERO
     } else {
         let qkv = run_linear(
             ln1_out,
@@ -816,8 +815,8 @@ fn run_attention(
                     .copy_from_slice(&row[2 * embed + src..2 * embed + src + head_dim]);
             }
         }
-        pack_elapsed = pack_started.elapsed();
-    }
+        pack_started.elapsed()
+    };
 
     let qn_w = wname(layer_idx, "attn_qnorm.weight");
     let use_qknorm = cfg.qknorm_start >= 0
@@ -1163,6 +1162,7 @@ pub(crate) fn vit_block_with_residual(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn vit_block(
     tokens: &mut [f32],
     n: usize,

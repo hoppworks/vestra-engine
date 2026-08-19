@@ -90,10 +90,8 @@ pub fn uv_pos_embed(pw: usize, ph: usize, c: usize, aspect: f32, omega0: f32) ->
         .map(|j| 1.0 / omega0.powf(j as f64 / f as f64))
         .collect();
 
-    for y in 0..ph {
-        for x in 0..pw {
-            let xc = x_coords[x];
-            let yc = y_coords[y];
+    for (y, &yc) in y_coords.iter().enumerate() {
+        for (x, &xc) in x_coords.iter().enumerate() {
             let base = (y * pw + x) * c;
             for j in 0..f {
                 let o = xc * omega[j];

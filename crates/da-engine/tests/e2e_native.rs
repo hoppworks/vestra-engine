@@ -348,16 +348,16 @@ fn build_synthetic_gguf() -> Vec<u8> {
     g.tensor_f32("vit.patch_embed.bias", &rng.vec(EMBED));
     g.tensor_f32("vit.pos_embed", &rng.vec((GRID * GRID + 1) * EMBED));
     g.tensor_f32("vit.cls_token", &rng.vec(EMBED));
-    g.tensor_f32("vit.norm.weight", &vec![1.0; EMBED]);
-    g.tensor_f32("vit.norm.bias", &vec![0.0; EMBED]);
+    g.tensor_f32("vit.norm.weight", &[1.0; EMBED]);
+    g.tensor_f32("vit.norm.bias", &[0.0; EMBED]);
     g.tensor_f32("vit.camera_token", &rng.vec(2 * EMBED));
 
     for i in 0..DEPTH {
         let p = |suffix: &str| format!("vit.blk.{i}.{suffix}");
-        g.tensor_f32(&p("norm1.weight"), &vec![1.0; EMBED]);
-        g.tensor_f32(&p("norm1.bias"), &vec![0.0; EMBED]);
-        g.tensor_f32(&p("norm2.weight"), &vec![1.0; EMBED]);
-        g.tensor_f32(&p("norm2.bias"), &vec![0.0; EMBED]);
+        g.tensor_f32(&p("norm1.weight"), &[1.0; EMBED]);
+        g.tensor_f32(&p("norm1.bias"), &[0.0; EMBED]);
+        g.tensor_f32(&p("norm2.weight"), &[1.0; EMBED]);
+        g.tensor_f32(&p("norm2.bias"), &[0.0; EMBED]);
         g.tensor_f32(&p("attn_qkv.weight"), &rng.vec(EMBED * 3 * EMBED));
         g.tensor_f32(&p("attn_qkv.bias"), &rng.vec(3 * EMBED));
         g.tensor_f32(&p("attn_proj.weight"), &rng.vec(EMBED * EMBED));
@@ -369,9 +369,9 @@ fn build_synthetic_gguf() -> Vec<u8> {
     }
 
     // ---- DPT head weights ----
-    for s in 0..4 {
-        g.tensor_f32(&format!("head.proj.{s}.weight"), &rng.vec(OC[s] * C_IN));
-        g.tensor_f32(&format!("head.proj.{s}.bias"), &rng.vec(OC[s]));
+    for (s, &channels) in OC.iter().enumerate() {
+        g.tensor_f32(&format!("head.proj.{s}.weight"), &rng.vec(channels * C_IN));
+        g.tensor_f32(&format!("head.proj.{s}.bias"), &rng.vec(channels));
     }
     g.tensor_f32("head.resize.0.weight", &rng.vec(OC[0] * OC[0] * 4 * 4));
     g.tensor_f32("head.resize.0.bias", &rng.vec(OC[0]));
@@ -381,10 +381,10 @@ fn build_synthetic_gguf() -> Vec<u8> {
     g.tensor_f32("head.resize.3.weight", &rng.vec(OC[3] * OC[3] * 3 * 3));
     g.tensor_f32("head.resize.3.bias", &rng.vec(OC[3]));
 
-    for s in 0..4 {
+    for (s, &channels) in OC.iter().enumerate() {
         g.tensor_f32(
             &format!("head.scratch.layer{}_rn.weight", s + 1),
-            &rng.vec(FUSION_C * OC[s] * 3 * 3),
+            &rng.vec(FUSION_C * channels * 3 * 3),
         );
     }
 
@@ -426,7 +426,7 @@ fn build_synthetic_gguf() -> Vec<u8> {
         );
         g.tensor_f32(
             &format!("head.scratch.rn{i}.out.weight"),
-            &rng.vec(FUSION_C * FUSION_C * 1 * 1),
+            &rng.vec(FUSION_C * FUSION_C),
         );
         g.tensor_f32(&format!("head.scratch.rn{i}.out.bias"), &rng.vec(FUSION_C));
     }

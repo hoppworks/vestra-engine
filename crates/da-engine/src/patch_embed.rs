@@ -195,8 +195,8 @@ impl CudaPatchEmbedExecutor {
     ) -> Result<(usize, usize, Vec<f32>), CudaError> {
         if height == 0
             || width == 0
-            || height % self.patch != 0
-            || width % self.patch != 0
+            || height / self.patch * self.patch != height
+            || width / self.patch * self.patch != width
             || image_nchw.len() != CHANNELS * height * width
         {
             return Err(CudaError::Kernel(format!(
@@ -304,15 +304,15 @@ mod tests {
         for y in 0..h {
             for x in 0..w {
                 // Only channel 0 nonzero, value = row-major pixel index.
-                img[(0 * h + y) * w + x] = (y * w + x) as f32;
+                img[y * w + x] = (y * w + x) as f32;
             }
         }
 
         let mut weights = Weights::new();
         // embed=1, in_c=3, patch=2 -> weight len = 1*3*2*2=12; only channel-0 taps = 1.
-        let mut w_data = vec![0f32; 1 * 3 * 2 * 2];
-        for i in 0..4 {
-            w_data[i] = 1.0; // in_c=0 taps
+        let mut w_data = vec![0f32; 3 * 2 * 2];
+        for value in w_data.iter_mut().take(4) {
+            *value = 1.0; // in_c=0 taps
         }
         weights.insert_f32(PATCH_EMBED_WEIGHT, w_data);
         weights.insert_f32(PATCH_EMBED_BIAS, vec![0.0]);
