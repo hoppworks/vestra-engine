@@ -9,6 +9,16 @@ four-image F32 parity corpus. A performance-path change additionally needs an
 alternating smoke benchmark before it can be considered for the full
 randomized trial study.
 
+```bash
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-features
+```
+
+`Cargo.lock` is part of the repository because the workspace ships CLI and
+benchmark binaries. Dependency changes must update it intentionally; normal
+verification must keep `--locked`.
+
 Do not vendor kernel source into this repository. Add or change low-level CPU
 work in Vestra Kernels, publish or pin its revision, then consume its stable
 public API here. Keep model IDs, weights, inputs, compiler flags, and trial

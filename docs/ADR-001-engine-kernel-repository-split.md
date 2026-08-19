@@ -18,8 +18,9 @@ oracles.
 
 The dependency is one-way: Vestra Engine depends on Vestra Kernels. Kernels
 must not import engine types, GGUF readers, model configuration, or CLI code.
-The engine depends on a versioned `vestra-kernels` crate. A local Cargo patch
-is permitted only for development and is documented in the engine manifest.
+The engine depends on an exact `vestra-kernels` Git revision recorded in
+`Cargo.lock`. An uncommitted local Cargo source override is permitted only for
+development; it must not replace the versioned dependency in the manifest.
 
 ## Consequences
 

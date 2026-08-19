@@ -54,7 +54,7 @@ Die **Zwei-Iterationen-Regel** (Spec §6.3) gilt ab M2 für jede Kernel-/Kompone
 
 - [ ] **Step 1: Prüfen, ob Git initialisiert ist; falls nicht, initialisieren**
 
-Run: `cd /Users/hoppworks/Desktop/depth-anything.cpp-master && git rev-parse --is-inside-work-tree 2>/dev/null || git init`
+Run from a checkout of `depth-anything.cpp-master`: `git rev-parse --is-inside-work-tree 2>/dev/null || git init`
 Expected: entweder `true`, oder Ausgabe „Initialized empty Git repository".
 
 - [ ] **Step 2: Workspace-Root `Cargo.toml` schreiben**
@@ -135,7 +135,7 @@ Hinweis: `members` startet leer (siehe Kommentar im TOML oben). Dieser Step veri
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/hoppworks/Desktop/depth-anything.cpp-master
+cd /path/to/depth-anything.cpp-master
 git add depth-anything-rs/Cargo.toml depth-anything-rs/README.md depth-anything-rs/.gitignore depth-anything-rs/rust-toolchain.toml
 git commit -m "chore: scaffold self-contained depth-anything-rs cargo workspace"
 ```

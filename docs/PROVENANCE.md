@@ -1,11 +1,13 @@
 # Vestra Engine provenance
 
 Vestra Engine was extracted from the optimized Rust implementation developed
-inside `hoppworks/depth-anything.cpp-master`.
+inside the versioned
+[`hoppworks/depth-anything.cpp-master`](https://github.com/hoppworks/depth-anything.cpp-master)
+repository.
 
 ## Source snapshot
 
-- Source repository: `/Users/hoppworks/projects/portfolio/depth-anything.cpp-master`
+- Source repository: `https://github.com/hoppworks/depth-anything.cpp-master`
 - Source commit: `b326a9c2f6f7c80c85e72bda050ceb41c83cac17`
 - Extracted history commit: `14452b6f70fe16dbfa5e2564a8b8a17170e934d0`
 - Source subtree: `depth-anything-rs/`
@@ -28,3 +30,13 @@ Vestra Engine owns model semantics, model loading, preprocessing, tensor
 scheduling, single-view and multi-view inference, and backend selection.
 Fixed-shape CPU and CUDA kernels live in the separately versioned
 `vestra-kernels` repository.
+
+## Third-party source boundary
+
+The model topology originates in ByteDance Seed's Depth Anything 3. Several
+model-semantic sections are direct Rust ports of the pinned
+`localai-org/depth-anything.cpp` implementation, while GGUF/Q8_0 compatibility
+follows the ggml format. The exact revisions, affected modules, copyright
+notices, and licenses are recorded in
+[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). Model weights are not
+part of this source repository.

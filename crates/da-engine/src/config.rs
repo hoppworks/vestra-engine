@@ -1,3 +1,15 @@
+//! DA3 GGUF model configuration.
+//!
+//! The metadata keys and optional-value defaults in this module are direct
+//! Rust translations of [`include/da_gguf_keys.h`] and
+//! [`src/model_loader.cpp`] from pinned `depth-anything.cpp` revision
+//! `2028b47ac75a8659c6a9aa617baf09be193eb55f` (MIT). The Rust error model and
+//! validation API are Vestra modifications. See `THIRD_PARTY_NOTICES.md` at
+//! the repository root.
+//!
+//! [`include/da_gguf_keys.h`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/include/da_gguf_keys.h
+//! [`src/model_loader.cpp`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/src/model_loader.cpp
+
 use da_gguf::GgufFile;
 
 /// GGUF metadata key names for the `depthanything3` architecture.

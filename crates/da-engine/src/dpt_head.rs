@@ -3,12 +3,17 @@
 //! each `[n_patch, C]` token-major) and produces a dense depth map (`exp`
 //! activation) plus a confidence map (`exp(x)+1`, "expp1").
 //!
-//! Ported line-for-line from the real C++ reference —
-//! `../src/dpt_head.cpp::DptHead::build_depth_graph` (the shared graph
-//! builder for depth/conf, aux-ray, and the metric-relative variants) and
-//! `../src/dpt_blocks.cpp` (`conv2d`/`conv_transpose2d_p0`/
-//! `residual_conv_unit`/`feature_fusion`/`interp_bilinear_ac` helpers) —
-//! read directly during this task's investigation, not reverse-engineered.
+//! ## Third-party provenance
+//!
+//! The model-semantic sequence is ported line-for-line from
+//! [`src/dpt_head.cpp::DptHead::build_depth_graph`] and the helper equations
+//! in [`src/dpt_blocks.cpp`] at pinned `depth-anything.cpp` revision
+//! `2028b47ac75a8659c6a9aa617baf09be193eb55f` (MIT). Vestra replaces the ggml
+//! graph with Rust ownership, cached workspaces, and specialized kernels. See
+//! the repository-root `THIRD_PARTY_NOTICES.md`.
+//!
+//! [`src/dpt_head.cpp::DptHead::build_depth_graph`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/src/dpt_head.cpp
+//! [`src/dpt_blocks.cpp`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/src/dpt_blocks.cpp
 //!
 //! ## Design choice: direct `vestra_kernels` calls, not a `da_graph::Op`/`Plan` mini-graph
 //!

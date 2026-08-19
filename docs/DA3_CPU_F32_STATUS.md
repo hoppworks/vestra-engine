@@ -8,19 +8,34 @@ fair comparison, understand which runtime path is authoritative, and choose
 the next experiment without repeating rejected work or weakening the fidelity
 contract.
 
-## Verified current result
+## Canonical public result
 
-The current qualified CPU-F32 study was generated on 2026-08-13 with ten
+The conservative release baseline was generated on 2026-08-13 with twenty
 randomized process trials per arm and ten timed iterations per process:
+
+| Arm | Mean of trial medians | 95% CI | Peak RSS |
+|---|---:|---:|---:|
+| Rust DA3-BASE F32 | 171.141 ms | 168.042–174.241 ms | 804.0 MiB |
+| C++/ggml DA3-BASE F32 | 238.789 ms | 237.406–240.172 ms | 618.2 MiB |
+
+Rust therefore delivers 39.5% higher throughput than this C++/ggml reference.
+Equivalently, its mean latency is 28.3% lower. These two percentage conventions
+must never be mixed.
+
+### Later exploratory result
+
+After the canonical run, iteration 55 evaluated a packed Flash-attention
+candidate with ten randomized process trials per arm:
 
 | Arm | Mean of trial medians | 95% CI | Peak RSS |
 |---|---:|---:|---:|
 | Rust DA3-BASE F32 | 165.751 ms | 161.038–170.464 ms | 804.1 MiB |
 | C++/ggml DA3-BASE F32 | 238.647 ms | 236.902–240.392 ms | 618.5 MiB |
 
-Rust therefore delivers 1.44× the throughput of this C++/ggml reference, or
-44.0% faster execution. Equivalently, its mean latency is 30.5% lower. These
-two percentage conventions must never be mixed.
+That later run corresponds to 44.0% higher throughput and 30.5% lower
+latency. It is preserved as serious optimization evidence, but its smaller
+sample and incomplete source-commit capture make it exploratory rather than
+the public release headline.
 
 ### Hardware and software fingerprint
 
@@ -39,14 +54,17 @@ The CPU has two L3-cache CCDs and one NUMA node; benchmark trials are not
 claimed to be a universal result for every Ryzen, operating system or CPU
 affinity policy.
 
-The durable evidence bundle is checked in under the iteration-55 benchmark
-artifact: its [summary](benchmarks/2026-08-workhorse/iteration55-packed-flash/RESULTS.md)
-and [raw trials](benchmarks/2026-08-workhorse/iteration55-packed-flash/raw-results.json)
-hold every trial, command, model hash, input hash and host record. Record the
-binary and source-tree hashes alongside any future rerun before presenting a
-new number outside this repository. The iteration-55 runner could not resolve
-Git commits from its workhorse snapshot; that provenance limitation is recorded
-with the artifact and must not be hidden.
+The canonical evidence is the
+[N=20 summary](benchmarks/2026-08-workhorse/2026-08-13-revalidation-cpu-f32-blis-n20/RESULTS.md)
+and its
+[raw trials](benchmarks/2026-08-workhorse/2026-08-13-revalidation-cpu-f32-blis-n20/raw-results.json).
+The later candidate has a separate
+[iteration-55 summary](benchmarks/2026-08-workhorse/iteration55-packed-flash/RESULTS.md)
+and [raw trials](benchmarks/2026-08-workhorse/iteration55-packed-flash/raw-results.json).
+Record binary and source-tree hashes alongside any future rerun before
+presenting a new number outside this repository. The iteration-55 runner could
+not resolve Git commits from its workhorse snapshot; that provenance limitation
+must not be hidden.
 
 ### Fidelity gate
 
@@ -116,7 +134,7 @@ independently with their own bitwise oracles.
 | Keep BLIS bridges explicit | qualified whole-model studies beat the earlier native fallback | portable builds may have different speed |
 | Keep native direct QKV | BLIS QKV regressed by about 2.8% in smoke A/B | no QKV staging or BLIS transpose handoff |
 | Keep fused final resize + F2 Winograd | materialized route lost a full study | avoid 41 MiB final resize materialization |
-| Keep packed QT8 Flash | full 10× study reduced Rust to 165.751 ms | old QT8 remains only as an A/B control |
+| Keep packed QT8 Flash as a candidate | exploratory 10-trial study reduced Rust to 165.751 ms | revalidate at N=20 before promoting its number to the release headline |
 | Require parity before qualifying speed | four-image C++ F32 gate | faster incorrect output is rejected |
 
 ## Rejected paths worth not repeating blindly
@@ -138,7 +156,7 @@ The rationale and raw smoke/full-study values live in the optimization ledger.
 Do not reinterpret a rejected microbenchmark as an end-to-end opportunity
 without new profiling evidence.
 
-## Reproducing the qualified comparison
+## Reproducing the canonical comparison
 
 Run only on a quiet workhorse. Stop other CPU-intensive jobs first; thermal
 and scheduler interference widened Rust variance substantially during this
@@ -166,19 +184,22 @@ env \
   RAYON_NUM_THREADS=16 \
   RUSTFLAGS="--cfg da3_blis -L native=/tmp/da3-blis-install/lib -C target-cpu=znver5" \
   python3 scripts/run_scientific_benchmark.py \
-    --cpu-f32-direct --trials 10 --repeat 10 --threads 16 --cooldown 3 \
-    --seed 20260819 --output /tmp/da3-cpu-f32-<label>
+    --cpu-f32-direct --trials 20 --repeat 10 --threads 16 --cooldown 3 \
+    --seed 20260812 --output /tmp/da3-cpu-f32-<label>
 ```
 
-Run the four-image PFM gate before accepting a candidate. The C++ F32 output
-is the reference; compare one output per canyon, desk, mountains and street.
-The benchmark contract gives the exact scope, statistics and exclusions.
+Run the four-image PFM gate before accepting a candidate. The C++ F32 output is
+the reference; compare one output per canyon, desk, mountains and street. The
+benchmark contract gives the exact scope, statistics and exclusions. A
+10-trial run remains suitable for candidate evaluation, but only the N=20
+revalidation is the canonical public number.
 
 ## Safe next steps
 
-The user accepted the 44% result as the current stopping point. If work
-resumes, begin by reproducing the 165.751 ms bundle on an idle host, preserving
-the same model, input, thread budget and timed boundary.
+If performance work resumes, begin by reproducing the 171.141 ms canonical
+bundle on an idle host, preserving the same model, input, thread budget and
+timed boundary. Then revalidate the 165.751 ms iteration-55 candidate at N=20
+before considering a headline update.
 
 Only then choose a new experiment from a profile. The most plausible remaining
 area is online Flash softmax/accumulator work, but its upside is unproven and
@@ -193,8 +214,12 @@ qualify. Any new candidate must have:
 
 ## Source attribution and limits
 
-Depth Anything 3, its weights and the C++/ggml reference are third-party
-work. This project contributes the Rust path, the kernel work, the benchmark
-infrastructure, parity gates and the documented analysis. The result does not
-generalize automatically to other models, image resolutions, CPUs, compilers,
-operating systems or GPU inference.
+Depth Anything 3, the DA3-BASE weights, depth-anything.cpp, and ggml are
+third-party work. This repository does not distribute model weights. The
+specific DA3-BASE checkpoint used by this study is Apache-2.0; that statement
+does not cover every DA3 checkpoint. This project contributes the Rust path,
+the kernel work, the benchmark infrastructure, parity gates and the documented
+analysis. See [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) for exact
+source and license provenance. The result does not generalize automatically to
+other models, image resolutions, CPUs, compilers, operating systems or GPU
+inference.

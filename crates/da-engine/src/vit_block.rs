@@ -1,6 +1,20 @@
 //! A single DINOv2/DA3 ViT transformer block (`vit_block`) and its weight
 //! tensor naming convention.
 //!
+//! ## Third-party provenance
+//!
+//! The block topology, optional Q/K normalization, RoPE boundary, tensor
+//! naming, and local/global attention semantics are structure-preserving Rust
+//! ports of [`src/vit_block.cpp`], [`src/attention.cpp`], and
+//! [`src/dino_backbone.cpp`] at pinned `depth-anything.cpp` revision
+//! `2028b47ac75a8659c6a9aa617baf09be193eb55f` (MIT). Vestra supplies different
+//! graph ownership, dispatch, and CPU/CUDA kernels. See the repository-root
+//! `THIRD_PARTY_NOTICES.md`.
+//!
+//! [`src/vit_block.cpp`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/src/vit_block.cpp
+//! [`src/attention.cpp`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/src/attention.cpp
+//! [`src/dino_backbone.cpp`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/src/dino_backbone.cpp
+//!
 //! Block structure (verified against the real C++ reference,
 //! `../src/vit_block.cpp`/`../src/attention.cpp` — see the module-level
 //! doc comments on `da_graph::graph::Op::Attention` for the two traps this

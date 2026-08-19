@@ -62,10 +62,10 @@ therefore opt-in, is not selected by the product CLI, and carries no current
 end-to-end performance claim. The executable gates live in
 [`cuda_residual_parity.rs`](crates/da-engine/tests/cuda_residual_parity.rs).
 
-## CPU-F32 baseline
+## Canonical CPU-F32 baseline
 
-The current durable 20-trial same-machine study on an AMD Ryzen 9 9950X,
-16 benchmark threads, DA3-BASE F32, and 504×336 measured:
+The conservative public release result is the durable 20-trial same-machine
+study on an AMD Ryzen 9 9950X, 16 benchmark threads, DA3-BASE F32, and 504×336:
 
 | Runtime | Mean of trial medians | 95% CI |
 |---|---:|---:|
@@ -74,14 +74,17 @@ The current durable 20-trial same-machine study on an AMD Ryzen 9 9950X,
 
 That is 28.3% lower latency, or 39.5% higher throughput. It is a single-image
 CPU-F32 result and must not be presented as proof of multi-view, quantized, GPU,
-or complete reconstruction performance. Raw trials and provenance live under
+or complete reconstruction performance. A later 10-trial experimental kernel
+iteration measured 165.751 ms for Rust and 238.647 ms for C++/ggml; that result
+is retained as optimization evidence, not used as the canonical release
+headline. Raw trials and provenance live under
 `docs/benchmarks/2026-08-workhorse/`.
 
 ## Build and test
 
 ```bash
-cargo test --workspace
-cargo run -p vestra-cli -- infer \
+cargo test --locked --workspace
+cargo run --locked -p vestra-cli -- infer \
   --model /path/to/model.gguf \
   --image /path/to/image.jpg \
   --output /tmp/depth.pfm
@@ -100,11 +103,24 @@ the benchmark bundle rather than hidden in this README.
 ## Reproducible dependency
 
 The checked-in Cargo configuration resolves `vestra-kernels` from an exact
-Git revision. A clone therefore builds without a sibling checkout while every
-engine revision still names the kernel source it qualified. Contributors may
-use a local Cargo source patch while changing both repositories; that override
-must never replace the committed revision. See the
+Git revision, and `Cargo.lock` records the complete CLI/benchmark dependency
+graph. A clone needs no sibling checkout once that remote revision is readable,
+while every engine revision still names the kernel source it qualified.
+Contributors may use an uncommitted local Cargo source override while changing
+both repositories; that override must never replace the committed revision.
+See the
 [repository split migration](docs/REPOSITORY_SPLIT.md) and
 [ADR-001](docs/ADR-001-engine-kernel-repository-split.md) for the boundary and
 release requirement. The exact local and benchmark identities are recorded in
 [the reproducibility record](docs/REPRODUCIBILITY.md).
+
+## Licensing and model weights
+
+The repository source is MIT-licensed, subject to the third-party notices for
+the model architecture and reference implementations used by the project.
+Model weights are not distributed in this repository. The benchmarked
+`depth-anything/DA3-BASE` checkpoint is Apache-2.0; that statement is specific
+to DA3-BASE and must not be generalized to DA3-LARGE, DA3-GIANT, or Nested
+checkpoints, whose model cards publish different terms. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for pinned sources, affected
+modules, and complete license copies.

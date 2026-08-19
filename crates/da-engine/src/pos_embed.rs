@@ -1,3 +1,12 @@
+//! Learned DINO/DA3 positional-token assembly and interpolation.
+//!
+//! The bicubic kernel, scale convention, and token assembly are direct Rust
+//! ports of [`src/dino_backbone.cpp`] at pinned `depth-anything.cpp` revision
+//! `2028b47ac75a8659c6a9aa617baf09be193eb55f` (MIT). Vestra adds Rust-owned
+//! caching and validation. See the repository-root `THIRD_PARTY_NOTICES.md`.
+//!
+//! [`src/dino_backbone.cpp`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/src/dino_backbone.cpp
+
 use std::collections::HashMap;
 
 use crate::patch_embed::patch_embed;

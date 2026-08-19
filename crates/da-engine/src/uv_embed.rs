@@ -2,9 +2,18 @@
 //! every `projects[s]` stage and once more after the final upsample (Task
 //! 18's `dpt_head`), gated by `cfg.head_pos_embed`.
 //!
-//! Ported byte-for-byte from the real C++ reference's `uv_pos_embed`
-//! (`../src/uv_posembed.cpp`) and its caller `add_uv_input`
-//! (`../src/dpt_head.cpp`), which additionally:
+//! ## Third-party provenance
+//!
+//! The embedding equations are ported expression-for-expression from
+//! [`src/uv_posembed.cpp`], and the scaling/layout contract follows
+//! `add_uv_input` in [`src/dpt_head.cpp`], at pinned `depth-anything.cpp`
+//! revision `2028b47ac75a8659c6a9aa617baf09be193eb55f` (MIT). Vestra adds the
+//! Rust cache and API. See the repository-root `THIRD_PARTY_NOTICES.md`.
+//!
+//! [`src/uv_posembed.cpp`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/src/uv_posembed.cpp
+//! [`src/dpt_head.cpp`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/src/dpt_head.cpp
+//!
+//! The translated caller additionally:
 //! 1. Reorders `uv_pos_embed`'s raw `[ph, pw, c]` (`(y*pw+x)*c+ch`) output
 //!    into `[c, ph, pw]` CHW (`ch*ph*pw + y*pw + x`), matching the feature
 //!    maps this gets added onto.

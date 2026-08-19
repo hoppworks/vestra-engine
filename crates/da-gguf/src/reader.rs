@@ -1,3 +1,11 @@
+//! Minimal GGUF reader used by Vestra Engine.
+//!
+//! Container fields and tensor-type codes follow the public ggml GGUF/GGML
+//! definitions at pinned revision
+//! `eced84c86f8b012c752c016f7fe789adea168e1e` (MIT). This reader is an
+//! independent safe-Rust implementation and does not vendor or link ggml.
+//! See the repository-root `THIRD_PARTY_NOTICES.md`.
+
 use crate::meta::MetaValue;
 use crate::q8_0::{self, TensorQ8_0, QK8_0};
 use half::f16;

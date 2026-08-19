@@ -4,6 +4,18 @@
 //! `[5,7,9,11]` — see `../scripts/gguf_keys.py`) that `get_intermediate_layers`
 //! actually produces.
 //!
+//! ## Third-party provenance
+//!
+//! The backbone execution order is a structure-preserving Rust port of
+//! [`src/dino_backbone.cpp`] from the pinned `depth-anything.cpp` PR #2 merge
+//! (`2028b47ac75a8659c6a9aa617baf09be193eb55f`, MIT). The automatic
+//! reference-view selection and ordered multi-view schedule below follow that
+//! same merged revision. Vestra's storage, caching, backend dispatch, and
+//! kernel scheduling are modifications. See the repository-root
+//! `THIRD_PARTY_NOTICES.md`.
+//!
+//! [`src/dino_backbone.cpp`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/src/dino_backbone.cpp
+//!
 //! ## What this does (and why it isn't "just run `vit_block` `depth` times")
 //!
 //! The real C++ reference's `DinoBackbone::forward`

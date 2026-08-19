@@ -13,9 +13,11 @@ This study has two products that must never be collapsed into one leaderboard:
    Rust runtime. This is the only comparison allowed to say that one runtime
    is faster than another.
 
-DA3-BASE CPU-F32 has a separate, completed 44%-faster study. It is not a
-substitute for a V2-Small same-model benchmark and must not be merged into the
-V2 table.
+DA3-BASE CPU-F32 has a separate canonical N=20 study: Vestra Engine measured
+171.141 ms versus 238.789 ms for C++/ggml, or 39.5% higher throughput (28.3%
+lower latency). A later N=10 exploratory iteration reached 165.751 ms, but is
+not the public release headline. Neither result substitutes for a V2-Small
+same-model benchmark or belongs in the V2 table.
 
 ## Study arms
 

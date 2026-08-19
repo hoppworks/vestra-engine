@@ -1,3 +1,10 @@
+//! GGML-compatible Q8_0 wire-layout decoding.
+//!
+//! The 32-value block shape, f16 scale, and packed i8 layout follow ggml at
+//! pinned revision `eced84c86f8b012c752c016f7fe789adea168e1e` (MIT). The
+//! decoding loop is an independent Rust implementation. See the
+//! repository-root `THIRD_PARTY_NOTICES.md`.
+
 use half::f16;
 
 pub const QK8_0: usize = 32;

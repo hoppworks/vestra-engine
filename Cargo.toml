@@ -24,7 +24,7 @@ serde_json = "1"
 image = "0.25"
 clap = { version = "4", features = ["derive"] }
 criterion = "0.5"
-vestra-kernels = { git = "https://github.com/hoppworks/vestra-kernels", rev = "1ad85305de14ea76ddd878af6dac80f19bdf2bc3" }
+vestra-kernels = { git = "https://github.com/hoppworks/vestra-kernels", rev = "783bd66cb22ff019ec6bbad0f9b8eb1632a6a14f" }
 
 [profile.release]
 opt-level = 3

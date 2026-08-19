@@ -20,18 +20,19 @@ because they require engine-owned parity fixtures.
 
 ## Local development
 
-Vestra Engine declares `vestra-kernels` as a versioned crate and applies a
-repository-local Cargo patch to the sibling checkout during development. This
-is intentionally the only local override. For a released build, remove the
-patch and resolve the published/pinned kernel release recorded in the lockfile.
+Vestra Engine declares `vestra-kernels` at exact Git revision
+`1ad85305de14ea76ddd878af6dac80f19bdf2bc3`, also recorded in `Cargo.lock`.
+Contributors changing both repositories may use an uncommitted local Cargo
+source override to a sibling checkout. This is intentionally the only local
+override; it must be removed before qualification so release builds resolve the
+committed revision with `--locked`.
 
-## Known release gap
+## Immutable release boundary
 
-The public GitHub repository for `hoppworks/vestra-kernels` did not exist when
-this split was prepared. The local repositories are committed and buildable;
-publishing the kernel repository, pushing its baseline commit, and replacing
-the local development patch with that immutable revision are required before a
-network-only clone can build.
+The engine no longer depends on a sibling path or a committed Cargo patch. A
+network-only public clone requires the pinned `hoppworks/vestra-kernels`
+revision to remain publicly readable; repository visibility is an operational
+release setting, not a source-code fallback.
 
 The committed local pair was fresh-cloned into sibling directories and checked
 successfully at engine `0c65739` and kernel `b35a917`. That validates the

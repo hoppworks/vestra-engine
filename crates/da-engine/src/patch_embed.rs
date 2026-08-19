@@ -1,3 +1,14 @@
+//! DA3's non-overlapping convolutional patch projection.
+//!
+//! Tensor names, OIHW semantics, and token ordering are a Rust translation of
+//! [`src/dino_backbone.cpp`] and the converter mappings in the pinned
+//! `depth-anything.cpp` revision
+//! `2028b47ac75a8659c6a9aa617baf09be193eb55f` (MIT). Vestra supplies the
+//! optimized CPU/CUDA execution paths. See the repository-root
+//! `THIRD_PARTY_NOTICES.md`.
+//!
+//! [`src/dino_backbone.cpp`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/src/dino_backbone.cpp
+
 use crate::ModelConfig;
 use da_graph::Weights;
 use vestra_kernels::conv::conv2d;

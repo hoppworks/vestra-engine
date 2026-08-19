@@ -1,3 +1,14 @@
+//! Image preprocessing for the DA3 execution contract.
+//!
+//! The production resize, patch-alignment, rounding, channel layout, and
+//! normalization semantics are a Rust translation of [`src/preprocess.cpp`]
+//! at pinned `depth-anything.cpp` revision
+//! `2028b47ac75a8659c6a9aa617baf09be193eb55f` (MIT). The calibrated letterbox
+//! API is a Vestra extension. See the repository-root
+//! `THIRD_PARTY_NOTICES.md`.
+//!
+//! [`src/preprocess.cpp`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/src/preprocess.cpp
+
 use crate::ModelConfig;
 use vestra_kernels::bilinear_resize;
 

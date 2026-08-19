@@ -5,10 +5,15 @@
 //! into extrinsics (`3x4` affine-inverse of camera-to-world) and intrinsics
 //! (`3x3` `K` matrix, resolution-dependent).
 //!
-//! Ported line-for-line from the real C++ reference, `../src/cam_pose.cpp`
-//! (85 lines, read directly during this task's investigation, not
-//! reverse-engineered) — see this module's per-function doc comments for
-//! the exact correspondence.
+//! ## Third-party provenance
+//!
+//! The MLP/head sequence and pose decoding are ported line-for-line from
+//! [`src/cam_pose.cpp`] at pinned `depth-anything.cpp` revision
+//! `2028b47ac75a8659c6a9aa617baf09be193eb55f` (MIT). Vestra replaces the ggml
+//! graph and tensor ownership with native Rust execution. See the
+//! repository-root `THIRD_PARTY_NOTICES.md`.
+//!
+//! [`src/cam_pose.cpp`]: https://github.com/localai-org/depth-anything.cpp/blob/2028b47ac75a8659c6a9aa617baf09be193eb55f/src/cam_pose.cpp
 //!
 //! ## Step 1 — MLP + heads -> `pose_enc[9]`
 //!

@@ -7,10 +7,15 @@ iterations per trial, and randomized fresh-process trials.
 
 | Study | Vestra Engine | C++/ggml | Result |
 |---|---:|---:|---|
-| 20-trial revalidation | 171.141 ms | 238.789 ms | 39.5% higher throughput for Vestra Engine |
+| Canonical 20-trial revalidation | 171.141 ms | 238.789 ms | 39.5% higher throughput for Vestra Engine |
 
 The model and input hashes, raw trial values, confidence intervals, compiler
 flags, and parity evidence are retained in the dated benchmark bundle. A
 post-split smoke benchmark is required before treating the split as a release
 candidate. The full 10-trial study must be repeated only on a quiet Workhorse
 with the published kernel revision pinned.
+
+This N=20 result is the conservative public release baseline. The later
+iteration-55 N=10 result (165.751 ms Rust, 238.647 ms C++/ggml) remains an
+explicitly exploratory optimization result until independently revalidated at
+the canonical trial count and provenance standard.
