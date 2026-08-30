@@ -116,11 +116,13 @@ release requirement. The exact local and benchmark identities are recorded in
 
 ## Licensing and model weights
 
-The repository source is MIT-licensed, subject to the third-party notices for
-the model architecture and reference implementations used by the project.
-Model weights are not distributed in this repository. The benchmarked
-`depth-anything/DA3-BASE` checkpoint is Apache-2.0; that statement is specific
-to DA3-BASE and must not be generalized to DA3-LARGE, DA3-GIANT, or Nested
-checkpoints, whose model cards publish different terms. See
+Vestra Engine's Daniel-owned original contributions are licensed under
+Apache-2.0. Direct ports and adaptations remain subject to their upstream
+notices: in particular, the `depth-anything.cpp` and ggml-derived portions
+retain their MIT copyright and permission notices. Model weights are not
+distributed in this repository. The benchmarked `depth-anything/DA3-BASE`
+checkpoint is Apache-2.0; that statement is specific to DA3-BASE and must not
+be generalized to DA3-LARGE, DA3-GIANT, or Nested checkpoints, whose model
+cards publish different terms. See [NOTICE](NOTICE) and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for pinned sources, affected
 modules, and complete license copies.

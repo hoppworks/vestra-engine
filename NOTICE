@@ -1,0 +1,14 @@
+Vestra Engine
+Copyright 2026 Vestra contributors
+
+Vestra Engine's original contributions are licensed under Apache License 2.0.
+This repository includes and adapts third-party material under its original
+license terms. See THIRD_PARTY_NOTICES.md and LICENSES/ for the relevant
+copyright, attribution, and license texts.
+
+Depth Anything 3
+Copyright 2025 The Depth Anything 3 Team
+Licensed under Apache License 2.0.
+
+Direct Rust ports and structure-preserving adaptations from depth-anything.cpp
+and ggml retain their MIT notices in THIRD_PARTY_NOTICES.md.

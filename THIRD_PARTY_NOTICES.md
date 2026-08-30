@@ -1,8 +1,9 @@
 # Third-party notices
 
-Vestra Engine's original source is available under the repository's MIT
-license. The model semantics and compatibility surfaces below derive from
-third-party projects and remain subject to their respective licenses.
+Vestra Engine's Daniel-owned original source is available under the
+repository's Apache-2.0 license. The model semantics and compatibility
+surfaces below derive from third-party projects and remain subject to their
+respective licenses. This file does not relicense upstream material.
 
 ## Depth Anything 3
 
