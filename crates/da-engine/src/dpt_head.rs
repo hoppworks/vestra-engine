@@ -84,8 +84,10 @@ use std::collections::HashMap;
 use vestra_kernels::conv::{
     conv2d, conv3x3_winograd_f2_prepared, conv3x3_winograd_f2_prepared_relu_input,
     conv3x3_winograd_f2_prepared_resize_align_corners, conv3x3_winograd_f4_prepared,
-    conv_transpose2d, prepare_winograd_f2_filter, prepare_winograd_f4_filter, WinogradF2Filter,
-    WinogradF4Filter,
+    conv_transpose2d, conv_transpose2d_oc16_prepared, conv_transpose2d_prepared,
+    prepare_nonoverlap_transpose_filter, prepare_nonoverlap_transpose_oc16_filter,
+    prepare_winograd_f2_filter, prepare_winograd_f4_filter, NonoverlapTransposeF32,
+    NonoverlapTransposeOc16F32, WinogradF2Filter, WinogradF4Filter,
 };
 use vestra_kernels::gemm::{BlisOrFaerGemm, Gemm};
 use vestra_kernels::{bilinear_resize_align_corners, scalar, Kernels};
@@ -138,6 +140,8 @@ const FUSION_C: usize = 128;
 pub struct WinogradFilterCache {
     filters: HashMap<String, WinogradF2Filter>,
     f4_filters: HashMap<String, WinogradF4Filter>,
+    transpose_filters: HashMap<String, NonoverlapTransposeF32>,
+    transpose_oc16_filters: HashMap<String, NonoverlapTransposeOc16F32>,
 }
 
 impl WinogradFilterCache {
@@ -167,6 +171,42 @@ impl WinogradFilterCache {
         self.f4_filters
             .entry(name.to_owned())
             .or_insert_with(|| prepare_winograd_f4_filter(get_weight(weights, name), in_c, out_c))
+    }
+
+    fn get_or_prepare_transpose(
+        &mut self,
+        weights: &Weights,
+        name: &str,
+        in_c: usize,
+        out_c: usize,
+        kernel: usize,
+    ) -> &NonoverlapTransposeF32 {
+        self.transpose_filters.entry(name.to_owned()).or_insert_with(|| {
+            prepare_nonoverlap_transpose_filter(get_weight(weights, name), in_c, out_c, kernel, kernel)
+        })
+    }
+
+    fn get_or_prepare_transpose_oc16(
+        &mut self,
+        weights: &Weights,
+        name: &str,
+        in_c: usize,
+        out_c: usize,
+        kernel: usize,
+    ) -> Option<&NonoverlapTransposeOc16F32> {
+        if !in_c.is_multiple_of(16) || !out_c.is_multiple_of(16) {
+            return None;
+        }
+        Some(self.transpose_oc16_filters.entry(name.to_owned()).or_insert_with(|| {
+            prepare_nonoverlap_transpose_oc16_filter(
+                get_weight(weights, name),
+                in_c,
+                out_c,
+                kernel,
+                kernel,
+            )
+            .expect("validated OC16 transposed-convolution shape")
+        }))
     }
 }
 
@@ -600,19 +640,56 @@ fn dpt_head_impl(
                 let oh = (grid_h - 1) * 4 + 4;
                 let ow = (grid_w - 1) * 4 + 4;
                 let mut out = overwrite_buffer(workspace, oc[0] * oh * ow);
-                conv_transpose2d(
-                    &projected,
-                    oc[0],
-                    grid_h,
-                    grid_w,
-                    rw,
-                    oc[0],
-                    4,
-                    4,
-                    4,
-                    Some(rb),
-                    &mut out,
-                );
+                let used_oc16 = std::env::var_os("DA3_TRANSPOSE_OC16").is_some()
+                    && wino_cache
+                        .get_or_prepare_transpose_oc16(
+                            weights,
+                            "head.resize.0.weight",
+                            oc[0],
+                            oc[0],
+                            4,
+                        )
+                        .is_some_and(|filter| {
+                            conv_transpose2d_oc16_prepared(
+                                &projected,
+                                grid_h,
+                                grid_w,
+                                filter,
+                                Some(rb),
+                                &mut out,
+                            )
+                        });
+                if !used_oc16 {
+                    let filter = wino_cache.get_or_prepare_transpose(
+                        weights,
+                        "head.resize.0.weight",
+                        oc[0],
+                        oc[0],
+                        4,
+                    );
+                    if !conv_transpose2d_prepared(
+                        &projected,
+                        grid_h,
+                        grid_w,
+                        filter,
+                        Some(rb),
+                        &mut out,
+                    ) {
+                        conv_transpose2d(
+                            &projected,
+                            oc[0],
+                            grid_h,
+                            grid_w,
+                            rw,
+                            oc[0],
+                            4,
+                            4,
+                            4,
+                            Some(rb),
+                            &mut out,
+                        );
+                    }
+                }
                 recycle_buffer(workspace, projected);
                 (out, oh, ow)
             }
@@ -622,19 +699,56 @@ fn dpt_head_impl(
                 let oh = (grid_h - 1) * 2 + 2;
                 let ow = (grid_w - 1) * 2 + 2;
                 let mut out = overwrite_buffer(workspace, oc[1] * oh * ow);
-                conv_transpose2d(
-                    &projected,
-                    oc[1],
-                    grid_h,
-                    grid_w,
-                    rw,
-                    oc[1],
-                    2,
-                    2,
-                    2,
-                    Some(rb),
-                    &mut out,
-                );
+                let used_oc16 = std::env::var_os("DA3_TRANSPOSE_OC16").is_some()
+                    && wino_cache
+                        .get_or_prepare_transpose_oc16(
+                            weights,
+                            "head.resize.1.weight",
+                            oc[1],
+                            oc[1],
+                            2,
+                        )
+                        .is_some_and(|filter| {
+                            conv_transpose2d_oc16_prepared(
+                                &projected,
+                                grid_h,
+                                grid_w,
+                                filter,
+                                Some(rb),
+                                &mut out,
+                            )
+                        });
+                if !used_oc16 {
+                    let filter = wino_cache.get_or_prepare_transpose(
+                        weights,
+                        "head.resize.1.weight",
+                        oc[1],
+                        oc[1],
+                        2,
+                    );
+                    if !conv_transpose2d_prepared(
+                        &projected,
+                        grid_h,
+                        grid_w,
+                        filter,
+                        Some(rb),
+                        &mut out,
+                    ) {
+                        conv_transpose2d(
+                            &projected,
+                            oc[1],
+                            grid_h,
+                            grid_w,
+                            rw,
+                            oc[1],
+                            2,
+                            2,
+                            2,
+                            Some(rb),
+                            &mut out,
+                        );
+                    }
+                }
                 recycle_buffer(workspace, projected);
                 (out, oh, ow)
             }
