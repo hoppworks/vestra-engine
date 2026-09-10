@@ -73,6 +73,7 @@
 use crate::ModelConfig;
 use da_graph::{Backend, Weights};
 use vestra_kernels::gemm::{Da3ProjectionGemm, Gemm};
+use vestra_kernels::packed_gemm::PreparedLinearF32;
 
 /// Execution seam for the two transformer residual additions. The normal
 /// production path supplies `None` and keeps the optimized CPU add. A CUDA
@@ -87,6 +88,53 @@ pub trait ResidualAddExecutor: Send + Sync {
 /// result; the residual addition remains an explicitly separate boundary.
 pub trait MlpExecutor {
     fn run_mlp(&self, layer_idx: usize, input: &[f32], rows: usize) -> Vec<f32>;
+}
+
+/// Experimental CPU MLP executor backed by model-load-time panel-packed F32
+/// weights. It is selected only through `DA3_PACKED_MLP=1`; normal inference
+/// remains on the qualified BLIS route until this candidate wins end-to-end.
+pub struct PackedMlpExecutor {
+    layers: Vec<PackedMlpLayer>,
+    ln_eps: f32,
+}
+
+struct PackedMlpLayer {
+    norm_gamma: Vec<f32>,
+    norm_beta: Vec<f32>,
+    fc1: PreparedLinearF32,
+    fc1_bias: Vec<f32>,
+    fc2: PreparedLinearF32,
+    fc2_bias: Vec<f32>,
+    ls2: Option<Vec<f32>>,
+}
+
+impl PackedMlpExecutor {
+    pub fn new(cfg: &ModelConfig, weights: &Weights) -> Option<Self> {
+        if cfg.embed_dim != 768 || cfg.mlp_hidden != 3072 || cfg.ffn_type != "mlp" {
+            return None;
+        }
+        let mut layers = Vec::with_capacity(cfg.depth as usize);
+        for layer_idx in 0..cfg.depth as usize {
+            let get = |suffix: &str| {
+                weights
+                    .get_f32(&wname(layer_idx, suffix))
+                    .map(ToOwned::to_owned)
+            };
+            layers.push(PackedMlpLayer {
+                norm_gamma: get("norm2.weight")?,
+                norm_beta: get("norm2.bias")?,
+                fc1: PreparedLinearF32::try_new(get("mlp_fc1.weight")?.as_slice(), 768, 3072)?,
+                fc1_bias: get("mlp_fc1.bias")?,
+                fc2: PreparedLinearF32::try_new(get("mlp_fc2.weight")?.as_slice(), 3072, 768)?,
+                fc2_bias: get("mlp_fc2.bias")?,
+                ls2: get("ls2"),
+            });
+        }
+        Some(Self {
+            layers,
+            ln_eps: cfg.ln_eps,
+        })
+    }
 }
 
 /// Execution seam for the complete QKV → Q/K normalization/RoPE → attention
@@ -645,6 +693,39 @@ impl MlpExecutor for CudaMlpExecutor {
         self.runtime
             .download_f32(&output)
             .expect("CUDA MLP result download must succeed")
+    }
+}
+
+impl MlpExecutor for PackedMlpExecutor {
+    fn run_mlp(&self, layer_idx: usize, input: &[f32], rows: usize) -> Vec<f32> {
+        let layer = &self.layers[layer_idx];
+        assert_eq!(
+            rows, 865,
+            "packed MLP supports the locked DA3 token shape only"
+        );
+        assert_eq!(input.len(), rows * 768);
+
+        let mut normalized = input.to_vec();
+        vestra_kernels::scalar::layernorm(
+            &mut normalized,
+            rows,
+            768,
+            &layer.norm_gamma,
+            &layer.norm_beta,
+            self.ln_eps,
+        );
+        let mut hidden = vec![0.0; rows * 3072];
+        assert!(layer.fc1.run_da3_base(&normalized, &mut hidden));
+        vestra_kernels::scalar::add_bias_rows(&mut hidden, rows, 3072, &layer.fc1_bias);
+        vestra_kernels::Kernels::detect().gelu(&mut hidden);
+
+        let mut output = vec![0.0; rows * 768];
+        assert!(layer.fc2.run_da3_base(&hidden, &mut output));
+        vestra_kernels::scalar::add_bias_rows(&mut output, rows, 768, &layer.fc2_bias);
+        if let Some(scale) = layer.ls2.as_deref() {
+            vestra_kernels::scalar::layerscale(&mut output, rows, 768, scale);
+        }
+        output
     }
 }
 

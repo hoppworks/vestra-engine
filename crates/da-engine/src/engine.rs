@@ -52,6 +52,7 @@ use crate::pos_embed::{prepare_tokens, PosEmbedCache};
 use crate::pose::cam_pose;
 use crate::preprocess::preprocess;
 use crate::uv_embed::UvEmbedCache;
+use crate::vit_block::PackedMlpExecutor;
 #[cfg(feature = "cuda-residual-oracle")]
 use crate::vit_block::{CudaAttentionExecutor, CudaMlpExecutor, CudaTransformerTailExecutor};
 use crate::{dpt_head, ModelConfig};
@@ -227,6 +228,7 @@ pub struct Engine {
     uv_cache: UvEmbedCache,
     wino_cache: WinogradFilterCache,
     head_workspace: HeadWorkspace,
+    packed_mlp: Option<PackedMlpExecutor>,
     #[cfg(feature = "cuda-residual-oracle")]
     cuda_residual: Option<vestra_kernels::cuda::CudaRuntime>,
     #[cfg(feature = "cuda-residual-oracle")]
@@ -255,6 +257,10 @@ impl Engine {
             cfg.out_layers
         );
         let weights = weights_from_gguf(&f, quant_prefer)?;
+        let packed_mlp = std::env::var_os("DA3_PACKED_MLP")
+            .is_some()
+            .then(|| PackedMlpExecutor::new(&cfg, &weights))
+            .flatten();
         Ok(Engine {
             cfg,
             weights,
@@ -263,6 +269,7 @@ impl Engine {
             uv_cache: UvEmbedCache::new(),
             wino_cache: WinogradFilterCache::new(),
             head_workspace: HeadWorkspace::new(),
+            packed_mlp,
             #[cfg(feature = "cuda-residual-oracle")]
             cuda_residual: None,
             #[cfg(feature = "cuda-residual-oracle")]
@@ -419,6 +426,9 @@ impl Engine {
     }
 
     fn backbone(&self) -> Backbone<'_> {
+        if let Some(executor) = self.packed_mlp.as_ref() {
+            return Backbone::new_with_mlp(&self.cfg, &self.weights, &self.backend, executor);
+        }
         #[cfg(feature = "cuda-residual-oracle")]
         if let Some(executor) = self.cuda_mlp.as_ref() {
             return Backbone::new_with_mlp(&self.cfg, &self.weights, &self.backend, executor);

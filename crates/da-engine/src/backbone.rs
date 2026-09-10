@@ -266,7 +266,6 @@ impl<'a> Backbone<'a> {
         }
     }
 
-    #[cfg(feature = "cuda-residual-oracle")]
     pub(crate) fn new_with_mlp(
         cfg: &'a ModelConfig,
         weights: &'a Weights,
