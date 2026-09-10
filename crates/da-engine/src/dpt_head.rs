@@ -86,10 +86,11 @@ use vestra_kernels::conv::{
     conv3x3_winograd_f2_prepared_resize_align_corners, conv3x3_winograd_f4_prepared,
     conv_transpose2d, conv_transpose2d_oc16_prepared, conv_transpose2d_prepared,
     prepare_nonoverlap_transpose_filter, prepare_nonoverlap_transpose_oc16_filter,
-    prepare_winograd_f2_filter, prepare_winograd_f4_filter, NonoverlapTransposeF32,
-    NonoverlapTransposeOc16F32, WinogradF2Filter, WinogradF4Filter,
+    prepare_winograd_f2_filter, prepare_winograd_f4_filter, resize_align_corners_1x1_prepared,
+    NonoverlapTransposeF32, NonoverlapTransposeOc16F32, WinogradF2Filter, WinogradF4Filter,
 };
 use vestra_kernels::gemm::{BlisOrFaerGemm, Gemm};
+use vestra_kernels::packed_gemm::PreparedLinearF32;
 use vestra_kernels::{bilinear_resize_align_corners, scalar, Kernels};
 
 use crate::uv_embed::UvEmbedCache;
@@ -142,6 +143,7 @@ pub struct WinogradFilterCache {
     f4_filters: HashMap<String, WinogradF4Filter>,
     transpose_filters: HashMap<String, NonoverlapTransposeF32>,
     transpose_oc16_filters: HashMap<String, NonoverlapTransposeOc16F32>,
+    pointwise_filters: HashMap<String, PreparedLinearF32>,
 }
 
 impl WinogradFilterCache {
@@ -181,9 +183,17 @@ impl WinogradFilterCache {
         out_c: usize,
         kernel: usize,
     ) -> &NonoverlapTransposeF32 {
-        self.transpose_filters.entry(name.to_owned()).or_insert_with(|| {
-            prepare_nonoverlap_transpose_filter(get_weight(weights, name), in_c, out_c, kernel, kernel)
-        })
+        self.transpose_filters
+            .entry(name.to_owned())
+            .or_insert_with(|| {
+                prepare_nonoverlap_transpose_filter(
+                    get_weight(weights, name),
+                    in_c,
+                    out_c,
+                    kernel,
+                    kernel,
+                )
+            })
     }
 
     fn get_or_prepare_transpose_oc16(
@@ -197,16 +207,46 @@ impl WinogradFilterCache {
         if !in_c.is_multiple_of(16) || !out_c.is_multiple_of(16) {
             return None;
         }
-        Some(self.transpose_oc16_filters.entry(name.to_owned()).or_insert_with(|| {
-            prepare_nonoverlap_transpose_oc16_filter(
-                get_weight(weights, name),
-                in_c,
-                out_c,
-                kernel,
-                kernel,
-            )
-            .expect("validated OC16 transposed-convolution shape")
-        }))
+        Some(
+            self.transpose_oc16_filters
+                .entry(name.to_owned())
+                .or_insert_with(|| {
+                    prepare_nonoverlap_transpose_oc16_filter(
+                        get_weight(weights, name),
+                        in_c,
+                        out_c,
+                        kernel,
+                        kernel,
+                    )
+                    .expect("validated OC16 transposed-convolution shape")
+                }),
+        )
+    }
+
+    /// Packs a DPT OI pointwise filter into the projection kernel's required
+    /// `[input, output]` order once per loaded model.  The stream candidate
+    /// uses this only for the fixed 128→128 RefineNet output projection.
+    fn get_or_prepare_pointwise(
+        &mut self,
+        weights: &Weights,
+        name: &str,
+        in_c: usize,
+        out_c: usize,
+    ) -> &PreparedLinearF32 {
+        self.pointwise_filters
+            .entry(name.to_owned())
+            .or_insert_with(|| {
+                let source = get_weight(weights, name);
+                assert_eq!(source.len(), in_c * out_c, "pointwise OI shape");
+                let mut transposed = vec![0.0; source.len()];
+                for output in 0..out_c {
+                    for input in 0..in_c {
+                        transposed[input * out_c + output] = source[output * in_c + input];
+                    }
+                }
+                PreparedLinearF32::try_new(&transposed, in_c, out_c)
+                    .expect("validated DA3 pointwise packed shape")
+            })
     }
 }
 
@@ -410,6 +450,7 @@ fn feature_fusion(
     rc2: (&WinogradF2Filter, &[f32], &WinogradF2Filter, &[f32]),
     out_w: &[f32],
     out_b: &[f32],
+    pointwise: Option<&PreparedLinearF32>,
     target_h: usize,
     target_w: usize,
     gemm: &impl Gemm,
@@ -439,7 +480,16 @@ fn feature_fusion(
     let mut out = overwrite_buffer(workspace, c * target_h * target_w);
     let out_started = std::time::Instant::now();
     let resize_started = std::time::Instant::now();
-    if std::env::var_os("DA3_COMMUTE_FUSION_RESIZE_1X1").is_some() {
+    let used_streamed_pointwise = std::env::var_os("DA3_STREAM_FUSION_RESIZE_1X1").is_some()
+        && pointwise.is_some_and(|prepared| {
+            resize_align_corners_1x1_prepared(
+                &y, c, th, tw, target_h, target_w, prepared, out_b, &mut out,
+            )
+        });
+    if used_streamed_pointwise {
+        // The streaming candidate already wrote `out` in the established
+        // resize-then-projection order, including bias.
+    } else if std::env::var_os("DA3_COMMUTE_FUSION_RESIZE_1X1").is_some() {
         // A spatially constant 1x1 affine projection commutes with bilinear
         // resize: resize(W*x + b) = W*resize(x) + b. Projecting on the
         // smaller source map therefore eliminates up to three quarters of
@@ -843,6 +893,9 @@ fn dpt_head_impl(
             }
         }
     }
+    let rn1_pointwise = wino_cache
+        .get_or_prepare_pointwise(weights, "head.scratch.rn1.out.weight", FUSION_C, FUSION_C)
+        .clone();
     let rn_weights = |i: usize, suffix: &str| -> &[f32] {
         get_weight(weights, &format!("head.scratch.rn{i}.{suffix}"))
     };
@@ -881,7 +934,7 @@ fn dpt_head_impl(
     let rn4_out_b = rn_weights(4, "out.bias");
     let rn4_started = std::time::Instant::now();
     let mut out = feature_fusion(
-        &l_rn[3], h3, w3, None, None, rn4_rc2, rn4_out_w, rn4_out_b, h2, w2, &gemm, workspace,
+        &l_rn[3], h3, w3, None, None, rn4_rc2, rn4_out_w, rn4_out_b, None, h2, w2, &gemm, workspace,
     );
     recycle_buffer(workspace, std::mem::take(&mut l_rn[3]));
     let rn4_elapsed = rn4_started.elapsed();
@@ -900,6 +953,7 @@ fn dpt_head_impl(
         rn3_rc2,
         rn3_out_w,
         rn3_out_b,
+        None,
         h1,
         w1,
         &gemm,
@@ -925,6 +979,7 @@ fn dpt_head_impl(
         rn2_rc2,
         rn2_out_w,
         rn2_out_b,
+        None,
         h0,
         w0,
         &gemm,
@@ -950,6 +1005,7 @@ fn dpt_head_impl(
         rn1_rc2,
         rn1_out_w,
         rn1_out_b,
+        Some(&rn1_pointwise),
         2 * h0,
         2 * w0,
         &gemm,
