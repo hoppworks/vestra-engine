@@ -67,3 +67,25 @@ Retain this candidate only if all conditions hold:
 
 Only then may it enter the locked randomized independent-trial study. This is
 a locality hypothesis, not a claim that it closes the remaining target gap.
+
+## Idle-host admission smoke — 2026-09-10
+
+On the same idle Workhorse and release binary described in the rn1 result,
+five interleaved pairs changed only `DA3_PACKED_QKV`. Each trial used one
+warm-up plus ten timed iterations with `desk.jpg` at the locked 504 x 336
+workload.
+
+| Pair | Established QKV median (ms) | Packed QKV median (ms) | Delta (ms) |
+|---:|---:|---:|---:|
+| 1 | 166.717 | 157.750 | -8.967 |
+| 2 | 156.420 | 161.503 | +5.083 |
+| 3 | 163.836 | 153.116 | -10.720 |
+| 4 | 153.702 | 154.984 | +1.282 |
+| 5 | 158.440 | 161.901 | +3.461 |
+| **Mean** | **159.823** | **157.851** | **-1.972** |
+
+Only two of five interleaved pairs favored packed QKV. The mean improvement is
+also below the predeclared 2.0-ms threshold (and there is no demonstrated
+15-percent aggregate-QKV gain). **Decision: reject for the composed candidate.**
+The route remains opt-in for future investigation and is not enabled in any
+claimed benchmark result.

@@ -75,3 +75,43 @@ When idle, compare otherwise identical binaries and candidate flags with only
   for every image.
 
 Only then may this candidate join the randomized full study.
+
+## Idle-host admission smoke — 2026-09-10
+
+The Android emulator and Steam were stopped before this measurement. The host
+load average immediately before the binary rebuild was `0.06, 0.34, 0.45`.
+This is an admission smoke, not the final randomized N=20 public comparison.
+
+The release binary was built from `vestra-engine` `f3a3ff7` and
+`vestra-kernels` `d3a9b8b`, with the locked DA3-BASE F32 model, `desk.jpg`,
+504 x 336 input, 16 Rayon/OpenMP threads, and all established baseline flags.
+Each arm used one warm-up plus ten timed iterations. Five interleaved pairs
+changed only `DA3_RN1_F2_OC32`.
+
+| Pair | Generic median (ms) | OC32 median (ms) | Delta (ms) |
+|---:|---:|---:|---:|
+| 1 | 160.123 | 152.501 | -7.622 |
+| 2 | 164.301 | 156.432 | -7.869 |
+| 3 | 160.696 | 158.219 | -2.477 |
+| 4 | 163.058 | 158.656 | -4.402 |
+| 5 | 160.950 | 162.286 | +1.336 |
+| **Mean** | **161.826** | **157.619** | **-4.207** |
+
+The candidate was faster in four of five pairs and clears the predeclared
+2.0-ms admission threshold in the mean. It is therefore retained for the next
+composition step, but it has not yet satisfied the separate ten-pair or final
+randomized-study requirements.
+
+### C++ F32 parity on the target
+
+With `DA3_RN1_F2_OC32=1`, output PFM files were compared to the locked C++ F32
+reference corpus on the Workhorse:
+
+| Image | Pearson r | MAE |
+|---|---:|---:|
+| canyon | 0.9999936282 | 0.0018124970 |
+| desk | 0.9999782565 | 0.0017728067 |
+| mountains | 0.9999855792 | 0.0036749614 |
+| street | 0.9999721254 | 0.0008209983 |
+
+Every image passes `r >= 0.9999` and `MAE <= 0.005`.
