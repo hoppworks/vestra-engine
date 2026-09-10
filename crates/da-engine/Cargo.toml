@@ -10,10 +10,6 @@ default = []
 # native Vestra CUDA runtime while the remaining DA3 operators stay CPU-side.
 # This is deliberately not enabled by the product CLI yet.
 cuda-residual-oracle = ["vestra-kernels/cuda"]
-# Explicit experimental route for the prepared, strict-F32 oneDNN convolution
-# boundary. It remains off in ordinary builds and must be requested together
-# with the pinned native oneDNN environment.
-onednn-experiment = ["vestra-kernels/onednn-experiment"]
 
 [dependencies]
 da-gguf = { package = "vestra-gguf", path = "../da-gguf" }
