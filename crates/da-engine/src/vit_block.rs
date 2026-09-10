@@ -766,6 +766,10 @@ impl PackedMlpExecutor {
         const SLAB_ROWS: usize = 55;
 
         let layer = &self.layers[layer_idx];
+        let profile = std::env::var_os("DA_STRIP_MLP_PROFILE").is_some();
+        let fc1_ns = std::sync::atomic::AtomicU64::new(0);
+        let gelu_ns = std::sync::atomic::AtomicU64::new(0);
+        let fc2_ns = std::sync::atomic::AtomicU64::new(0);
         assert_eq!(
             rows, 865,
             "hidden-strip MLP supports the locked DA3 token shape only"
@@ -789,6 +793,7 @@ impl PackedMlpExecutor {
                 let slab_rows = normalized_slab.len() / EMBED;
                 let mut hidden = vec![0.0; slab_rows * STRIP];
                 for strip in 0..HIDDEN / STRIP {
+                    let fc1_started = profile.then(std::time::Instant::now);
                     for (input_rows, hidden_rows) in normalized_slab
                         .chunks(ROW_TILE * EMBED)
                         .zip(hidden.chunks_mut(ROW_TILE * STRIP))
@@ -805,10 +810,24 @@ impl PackedMlpExecutor {
                         STRIP,
                         &layer.fc1_bias[strip * STRIP..(strip + 1) * STRIP],
                     );
+                    if let Some(started) = fc1_started {
+                        fc1_ns.fetch_add(
+                            started.elapsed().as_nanos() as u64,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
+                    let gelu_started = profile.then(std::time::Instant::now);
                     // At this strip size the dispatch has one AVX-512 work
                     // unit, avoiding nested Rayon work while retaining the
                     // production GELU arithmetic.
                     vestra_kernels::Kernels::detect().gelu(&mut hidden);
+                    if let Some(started) = gelu_started {
+                        gelu_ns.fetch_add(
+                            started.elapsed().as_nanos() as u64,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
+                    let fc2_started = profile.then(std::time::Instant::now);
                     for (hidden_rows, output_rows) in hidden
                         .chunks(ROW_TILE * STRIP)
                         .zip(output_slab.chunks_mut(ROW_TILE * EMBED))
@@ -819,11 +838,28 @@ impl PackedMlpExecutor {
                             strip,
                         ));
                     }
+                    if let Some(started) = fc2_started {
+                        fc2_ns.fetch_add(
+                            started.elapsed().as_nanos() as u64,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
                 }
             });
         vestra_kernels::scalar::add_bias_rows(&mut output, rows, EMBED, &layer.fc2_bias);
         if let Some(scale) = layer.ls2.as_deref() {
             vestra_kernels::scalar::layerscale(&mut output, rows, EMBED, scale);
+        }
+        if profile {
+            let millis = |value: &std::sync::atomic::AtomicU64| {
+                value.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6
+            };
+            eprintln!(
+                "phase: strip_mlp[{layer_idx}] summed_slab_fc1={:.3}ms gelu={:.3}ms fc2={:.3}ms",
+                millis(&fc1_ns),
+                millis(&gelu_ns),
+                millis(&fc2_ns),
+            );
         }
         output
     }
