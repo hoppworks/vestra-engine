@@ -40,6 +40,15 @@ on the same packed weights to detect stale output state.
 The local development host cannot execute the AVX-512 test body; the target
 Workhorse must execute it before this candidate can be promoted.
 
+### Target ISA execution
+
+On the AMD Ryzen 9 9950X Workhorse, a clean temporary clone at kernel commit
+`d3a9b8b` ran `RAYON_NUM_THREADS=1 cargo test -p vestra-kernels packed_qkv
+--lib`. The AVX-512/FMA comparison executed and passed `1/1`, proving
+bit-for-bit equality between the packed and established direct QKV kernels
+for all 865 tokens, 12 heads and two consecutive inputs. The host retained
+unrelated interactive load, so this establishes correctness only, not timing.
+
 ## Predeclared admission
 
 The Workhorse was busy with unrelated Chrome, Flutter, VM and video workloads
