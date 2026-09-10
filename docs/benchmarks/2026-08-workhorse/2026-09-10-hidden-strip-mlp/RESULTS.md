@@ -90,6 +90,21 @@ UV/bias, boundary coverage through more than four tile rows, NaN overwrite
 checking, and consecutive-input scratch reuse. The first attempt exposed a
 stale top-border row-tag bug; it was fixed before this candidate was pushed.
 
+### Rejected admission: streamed rn1 resize → pointwise projection
+
+`vestra-kernels` `95673a97bb296c784175fa1c6200d6a6f4b8018a` and
+`vestra-engine` `750834e` add `DA3_STREAM_FUSION_RESIZE_1X1=1`, an exact-order
+candidate for rn1's `96×144 → 192×288`, 128→128 resize plus 1×1 projection.
+It streams six destination pixels at a time into the existing packed AVX-512
+projection microkernel and does not invoke nested BLIS workers.
+
+It failed the first performance admission: a same-binary diagnostic head
+profile measured the combined rn1 resize/projection at about **4.914 ms**
+with the candidate, compared with **4.217 ms** for the established route in
+the adjacent control measurement. This misses the predeclared 30% reduction
+target. The candidate remains opt-in for future investigation and is not part
+of the composed benchmark configuration. No F32 parity claim is made for it.
+
 Four-image C++ F32 parity (`cpp_{image}.pfm`) passed the required per-image
 gate (`r >= 0.9999`, `MAE <= 0.005`):
 
