@@ -89,6 +89,8 @@ use vestra_kernels::conv::{
     prepare_winograd_f2_filter, prepare_winograd_f4_filter, NonoverlapTransposeF32,
     NonoverlapTransposeOc16F32, WinogradF2Filter, WinogradF4Filter,
 };
+#[cfg(feature = "onednn-experiment")]
+use vestra_kernels::onednn::PreparedOneDnnConv2dF32;
 use vestra_kernels::gemm::{BlisOrFaerGemm, Gemm};
 use vestra_kernels::{bilinear_resize_align_corners, scalar, Kernels};
 
@@ -142,6 +144,8 @@ pub struct WinogradFilterCache {
     f4_filters: HashMap<String, WinogradF4Filter>,
     transpose_filters: HashMap<String, NonoverlapTransposeF32>,
     transpose_oc16_filters: HashMap<String, NonoverlapTransposeOc16F32>,
+    #[cfg(feature = "onednn-experiment")]
+    onednn_f2_filters: HashMap<String, PreparedOneDnnConv2dF32>,
 }
 
 impl WinogradFilterCache {
@@ -207,6 +211,34 @@ impl WinogradFilterCache {
             )
             .expect("validated OC16 transposed-convolution shape")
         }))
+    }
+
+    #[cfg(feature = "onednn-experiment")]
+    fn get_or_prepare_onednn_f2(
+        &mut self,
+        weights: &Weights,
+        name: &str,
+        in_c: usize,
+        out_c: usize,
+        height: usize,
+        width: usize,
+    ) -> Option<&mut PreparedOneDnnConv2dF32> {
+        // This cache is only correct for the exact spatial geometry embedded
+        // in the primitive. The first production route is shape-locked, so a
+        // name-only key cannot accidentally be reused for another shape.
+        let key = format!("{name}:{in_c}x{out_c}@{height}x{width}");
+        if !self.onednn_f2_filters.contains_key(&key) {
+            let prepared = PreparedOneDnnConv2dF32::try_new(
+                get_weight(weights, name),
+                get_weight(weights, "head.scratch.out1.bias"),
+                in_c,
+                out_c,
+                height,
+                width,
+            )?;
+            self.onednn_f2_filters.insert(key.clone(), prepared);
+        }
+        self.onednn_f2_filters.get_mut(&key)
     }
 }
 
@@ -984,18 +1016,34 @@ fn dpt_head_impl(
     };
     let mut fused = overwrite_buffer(workspace, feat_half * fh * fw);
     let out1_started = std::time::Instant::now();
-    let out1_filter =
-        wino_cache.get_or_prepare(weights, "head.scratch.out1.weight", FUSION_C, feat_half);
-    conv3x3_winograd_f2_prepared(
-        &out,
-        FUSION_C,
-        fh,
-        fw,
-        out1_filter,
-        feat_half,
-        Some(out1_b),
-        &mut fused,
-    );
+    #[cfg(feature = "onednn-experiment")]
+    let used_onednn = std::env::var_os("DA3_ONEDNN_OUT1").is_some()
+        && wino_cache
+            .get_or_prepare_onednn_f2(
+                weights,
+                "head.scratch.out1.weight",
+                FUSION_C,
+                feat_half,
+                fh,
+                fw,
+            )
+            .is_some_and(|prepared| prepared.execute(&out, &mut fused));
+    #[cfg(not(feature = "onednn-experiment"))]
+    let used_onednn = false;
+    if !used_onednn {
+        let out1_filter =
+            wino_cache.get_or_prepare(weights, "head.scratch.out1.weight", FUSION_C, feat_half);
+        conv3x3_winograd_f2_prepared(
+            &out,
+            FUSION_C,
+            fh,
+            fw,
+            out1_filter,
+            feat_half,
+            Some(out1_b),
+            &mut fused,
+        );
+    }
     recycle_buffer(workspace, out);
     let out1_elapsed = out1_started.elapsed();
 
