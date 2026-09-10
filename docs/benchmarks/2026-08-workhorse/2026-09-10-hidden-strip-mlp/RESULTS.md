@@ -115,6 +115,33 @@ gate (`r >= 0.9999`, `MAE <= 0.005`):
 | mountains | 0.9999855792 | 0.0036749614 |
 | street | 0.9999721254 | 0.0008209983 |
 
+### Candidate: remove nested Rayon bias scheduling in hidden-strip FC1
+
+**Hypothesis.** Each 55-token hidden-strip slab already owns its output buffer
+inside an outer Rayon worker. The generic `scalar::add_bias_rows` helper starts
+another Rayon traversal for inputs with at least 32 rows. All 16 slabs meet
+that threshold (15 × 55 rows and one 40-row tail), and each has 48 FC1 strips,
+so the executor unnecessarily starts **9,216 nested scheduling traversals per
+inference**. Replacing only this local bias epilogue with a serial row loop
+should remove scheduling and worker-stealing overhead without changing F32
+arithmetic.
+
+**Change.** `vestra-engine` `c6e273b` uses the worker-local helper only for
+the FC1 hidden strip. Global bias operations, GELU, FC1/FC2 kernels and all
+execution flags are unchanged.
+
+**Verification.** The new regression test compares the worker-local helper
+bit-for-bit with `scalar::add_bias_rows` for both the 40-row tail and a
+55-row slab. `cargo test -p vestra-engine --lib` passed 72/72. A four-image
+C++ F32 parity gate and a controlled idle-host A/B smoke are still required
+before promotion; the Workhorse is currently busy, so no timing result is
+recorded here.
+
+**Predeclared admission.** Keep this change only if a controlled A/B shows at
+least 2 ms end-to-end reduction or at least 5% reduction in the complete MLP
+phase. This is deliberately a low-single-digit-ms hypothesis, not a claimed
+large kernel win.
+
 ## Decision
 
 Keep the candidate opt-in.  Its next admission gate is an idle-host,
