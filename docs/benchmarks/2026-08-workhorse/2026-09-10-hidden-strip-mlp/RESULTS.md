@@ -61,6 +61,14 @@ standard-route smoke. It is promising but unqualified: the arms ran
 sequentially on a busy host, and no randomized trial confidence interval was
 computed.
 
+### Rejected composition: commuting Fusion resize and 1x1
+
+The existing `DA3_COMMUTE_FUSION_RESIZE_1X1=1` candidate was tested only on
+top of the combined hidden-strip + Out1 configuration. Its 1-warm-up +
+3-timed smoke median was **195.712 ms**, versus **192.350 ms** without that
+flag. It therefore did not improve this candidate composition and remains
+off. This result is also diagnostic-only because the Workhorse was busy.
+
 Four-image C++ F32 parity (`cpp_{image}.pfm`) passed the required per-image
 gate (`r >= 0.9999`, `MAE <= 0.005`):
 
