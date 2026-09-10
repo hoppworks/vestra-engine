@@ -56,3 +56,11 @@ promotion (control medians: 189.397 and 202.750 ms; candidate medians:
 197.035 and 200.154 ms). Therefore the candidate remains opt-in. It must win
 an idle-host smoke before becoming the default and must then enter the locked
 randomized trial protocol.
+
+## Combined diagnostic with passive OpenMP workers
+
+With the separately documented `KMP_BLOCKTIME=0` candidate enabled, alternating
+five-iteration smokes gave 205.667 and 197.133 ms for blocktime-only versus
+192.174 and 189.266 ms with the out1 microkernel as well. The direction is
+consistent with an additional small gain, but the host remained busy; this is
+not promotion evidence or an official benchmark result.
