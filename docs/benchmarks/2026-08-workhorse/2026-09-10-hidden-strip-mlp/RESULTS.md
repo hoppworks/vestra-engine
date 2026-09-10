@@ -69,6 +69,27 @@ top of the combined hidden-strip + Out1 configuration. Its 1-warm-up +
 flag. It therefore did not improve this candidate composition and remains
 off. This result is also diagnostic-only because the Workhorse was busy.
 
+### Final resize row-ring candidate
+
+`vestra-kernels` `07b0edbe5839a2d96b050940f94c0d74fae6eddf` adds the opt-in
+`DA3_FUSED_FINAL_RESIZE_ROW_RING=1` route for the exact final 64→32 F(2)
+operation. It retains four resized+UV rows per channel and worker rather than
+recomputing overlapping bilinear samples for every tile. The operation-level
+timed profile reduced final resize/Out2a from the prior approximately
+15.338 ms diagnostic observation to **7.225 ms** in its timed iteration.
+
+With hidden-strip MLP, Out1 F(2), and the row-ring candidate enabled, the
+busy-host 1-warm-up + 3-timed smoke produced 187.211 ms median
+(`187.211, 230.879, 175.377` ms). The 230.879 ms outlier confirms that this
+host is not suitable for a publishable comparison; treat the result only as
+admission evidence. The complete four-image C++ F32 parity gate again passed
+with the same per-image values recorded above.
+
+The kernel unit suite includes a bitwise fused-route comparison with signed
+UV/bias, boundary coverage through more than four tile rows, NaN overwrite
+checking, and consecutive-input scratch reuse. The first attempt exposed a
+stale top-border row-tag bug; it was fixed before this candidate was pushed.
+
 Four-image C++ F32 parity (`cpp_{image}.pfm`) passed the required per-image
 gate (`r >= 0.9999`, `MAE <= 0.005`):
 
