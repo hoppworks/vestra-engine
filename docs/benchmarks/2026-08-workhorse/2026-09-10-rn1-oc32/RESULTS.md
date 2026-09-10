@@ -53,6 +53,15 @@ against the generic AVX-512 F(2) route, and requires the special route to
 report that it executed. The local non-AVX host intentionally does not count
 that test as executed; it must run on the Workhorse before promotion.
 
+### Target ISA execution
+
+On the AMD Ryzen 9 9950X Workhorse, a clean temporary clone at kernel commit
+`d3a9b8b` ran `RAYON_NUM_THREADS=1 cargo test -p vestra-kernels rn1_oc32
+--lib`. The target-only AVX-512/FMA test executed (not skipped) and passed
+`1/1`, proving bitwise equality with the generic F(2) product on the target
+ISA. The Workhorse still had unrelated interactive load, so this is strictly a
+correctness result and contains no timing claim.
+
 ## Predeclared admission
 
 The Workhorse is occupied by unrelated workloads, so no timing is recorded.
