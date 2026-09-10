@@ -67,3 +67,49 @@ enough to reject even before an idle-machine study. Engine commit `e669576`
 was cleanly superseded by a dependency rollback to `c650933`; the failed
 kernel revision remains only in the independently versioned kernel history
 and is not imported by Vestra Engine.
+
+## Iteration 64 — cache-local MLP schedule (reverted)
+
+### Hypothesis and isolated change
+
+The first packed candidate still materialized complete normalized and hidden
+matrices, then launched independent parallel FC1 and FC2 projections. Kernel
+commit `ea2d539` restored the 6x64 packed panel kernel and exposed a serial
+six-row entry point. Engine commit `858622c` used one outer Rayon schedule:
+each six-row worker retained its normalized and hidden tile while running
+LayerNorm, FC1, bias, GELU, FC2, bias, and LayerScale. This removes full
+per-block MLP intermediates and nested parallel projection launches; it did
+not move image decode, model loading, or any input-dependent operation outside
+the timed boundary.
+
+### Correctness
+
+The kernel's row-boundary regression test and the full local suites passed:
+
+- `cargo test --locked` in `vestra-kernels`: 40 unit tests and 12 integration
+  tests passed.
+- `cargo test --locked -p vestra-engine --lib`: 70 tests passed.
+
+Four-image Rust versus C++ F32 parity remained inside the locked gate:
+
+| Image | Pearson r | MAE |
+|---|---:|---:|
+| canyon | 0.9999936282 | 0.0018124947 |
+| desk | 0.9999782566 | 0.0017728056 |
+| mountains | 0.9999855792 | 0.0036749605 |
+| street | 0.9999721254 | 0.0008209984 |
+
+### Measurement and decision
+
+On the currently busy Workhorse, a same-binary 1-warmup/5-iteration smoke
+run measured 201.188 ms for the qualified route and 202.043 ms for the
+candidate. Profiled MLP block times remained roughly 4.6–7.8 ms each, rather
+than approaching the `<= 43 ms` aggregate admission threshold. An AVX-512
+disassembly inspection of the preceding 12x32 failure also showed wide ZMM
+FMA instructions without accumulator stack spills, eliminating scalar
+fallback as the explanation for that regression.
+
+The candidate is therefore rejected for performance, despite correct output.
+Commit `d297e8c` cleanly reverts the Engine integration; the separate kernel
+repository retains the serial-row primitive for a future qualified superkernel
+experiment, but Vestra Engine imports neither rejected packed candidate.
