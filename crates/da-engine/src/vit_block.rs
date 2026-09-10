@@ -1038,7 +1038,9 @@ fn run_attention(
     let unpack_elapsed = unpack_started.elapsed();
 
     let projection_started = std::time::Instant::now();
-    let output = run_linear(
+    let mut output = std::mem::take(&mut workspace.branch);
+    output.resize(n * embed, 0.0);
+    run_linear_into(
         &attn_tok,
         n,
         embed,
@@ -1048,6 +1050,7 @@ fn run_attention(
         false,
         Some(&wname(layer_idx, "ls1")),
         weights,
+        &mut output,
     );
     if phase_profile {
         eprintln!(
@@ -1170,6 +1173,10 @@ fn vit_block_with_views_workspace(
         workspace,
     );
     add_residual(tokens, &attn_out, residual_executor);
+    // The attention projection and FC2 have the same [n, embed] shape. Its
+    // buffer is no longer read after the residual addition, so return it to
+    // the shared branch slot for the following MLP and next block.
+    workspace.branch = attn_out;
     let attention_elapsed = attention_started.elapsed();
 
     // --- MLP sub-block --- (same "tokens still holds the residual" trick)
