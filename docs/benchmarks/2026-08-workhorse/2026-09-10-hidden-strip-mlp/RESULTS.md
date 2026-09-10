@@ -53,10 +53,13 @@ the locked randomized study.
 |---|---:|---:|
 | Current qualified route, no packed MLP | 1 warm-up + 3 timed | 248.746 ms |
 | Hidden-strip candidate | 1 warm-up + 3 timed | 210.188 ms |
+| Hidden-strip + existing opt-in Out1 F(2) kernel | 1 warm-up + 3 timed | 192.350 ms |
 
 The candidate was therefore 15.5% lower latency in this noisy paired smoke.
-It is promising but unqualified: the arms ran sequentially on a busy host,
-and no randomized trial confidence interval was computed.
+The combined candidate was 22.7% lower latency than the same busy-host
+standard-route smoke. It is promising but unqualified: the arms ran
+sequentially on a busy host, and no randomized trial confidence interval was
+computed.
 
 Four-image C++ F32 parity (`cpp_{image}.pfm`) passed the required per-image
 gate (`r >= 0.9999`, `MAE <= 0.005`):
