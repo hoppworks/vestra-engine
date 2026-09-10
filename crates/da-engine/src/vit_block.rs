@@ -744,22 +744,6 @@ fn run_layernorm_into(
     vestra_kernels::scalar::layernorm(out, rows, cols, gamma, beta, eps);
 }
 
-fn run_layernorm(
-    x_in: &[f32],
-    rows: usize,
-    cols: usize,
-    gamma_name: &str,
-    beta_name: &str,
-    eps: f32,
-    weights: &Weights,
-) -> Vec<f32> {
-    let mut out = vec![0.0; x_in.len()];
-    run_layernorm_into(
-        x_in, rows, cols, gamma_name, beta_name, eps, weights, &mut out,
-    );
-    out
-}
-
 /// Runs `y = x[m,k] @ w[k,n] + bias[n]`, optionally followed by GELU and/or
 /// an in-place LayerScale (`y *= ls_gamma[n]`, only if `ls_name` is `Some`
 /// *and* that tensor is actually present in `weights` — presence-gated,
@@ -1400,7 +1384,17 @@ mod tests {
         weights.insert_f32("linear.b", random_vec(&mut rng, 5));
         weights.insert_f32("linear.ls", random_vec(&mut rng, 5));
 
-        let direct_norm = run_layernorm(&input, 3, 4, "norm.g", "norm.b", 1e-6, &weights);
+        let mut direct_norm = vec![0.0; input.len()];
+        run_layernorm_into(
+            &input,
+            3,
+            4,
+            "norm.g",
+            "norm.b",
+            1e-6,
+            &weights,
+            &mut direct_norm,
+        );
         let mut norm_graph = Graph::builder();
         let norm_x = norm_graph.input(3 * 4);
         let norm_g = norm_graph.weight("norm.g", 4);
