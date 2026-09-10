@@ -34,7 +34,9 @@ only by `DA3_STRIP_MLP=1`.
 
 The new kernel test compares the panel-local FC1 and carried FC2 accumulation
 against the pre-existing packed projection bit-for-bit when AVX-512/FMA is
-available.  On non-x86 hosts it intentionally skips the ISA-specific body.
+available.  On the Ryzen 9 9950X, its AVX-512/FMA body ran and passed:
+`cargo test hidden_strip_primitives_preserve_full_projection_bits --lib`.
+On non-x86 hosts it intentionally skips the ISA-specific body.
 
 ## Workhorse smoke and parity
 
