@@ -61,8 +61,8 @@
 #[cfg(test)]
 use crate::vit_block::vit_block;
 use crate::vit_block::{
-    vit_block_with_residual, vit_block_with_views, AttentionExecutor, MlpExecutor,
-    ResidualAddExecutor, TransformerTailExecutor,
+    vit_block_with_residual, vit_block_with_residual_workspace, vit_block_with_views,
+    AttentionExecutor, MlpExecutor, ResidualAddExecutor, TransformerTailExecutor, VitWorkspace,
 };
 use crate::ModelConfig;
 use da_graph::{Backend, Weights};
@@ -416,6 +416,7 @@ impl<'a> Backbone<'a> {
             }
         }
         let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
+        let mut vit_workspace = VitWorkspace::default();
         let cfg = self.cfg;
         let embed = cfg.embed_dim as usize;
         assert_eq!(
@@ -459,7 +460,7 @@ impl<'a> Backbone<'a> {
             let global =
                 cfg.alt_start >= 0 && (layer_idx as i32) >= cfg.alt_start && layer_idx % 2 == 1;
 
-            vit_block_with_residual(
+            vit_block_with_residual_workspace(
                 tokens,
                 n,
                 gh,
@@ -473,6 +474,7 @@ impl<'a> Backbone<'a> {
                 self.mlp_executor,
                 self.attention_executor,
                 self.transformer_tail_executor,
+                &mut vit_workspace,
             );
 
             if phase_profile {

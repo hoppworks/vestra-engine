@@ -685,6 +685,25 @@ fn add_residual(
 /// (`QK_NORM_EPS = 1e-5f`) for the full provenance.
 pub const QK_NORM_EPS: f32 = 1e-5;
 
+/// Reusable CPU scratch for the attention branch of a ViT block.
+///
+/// The DA3-BASE inference path visits twelve blocks with the same activation
+/// geometry.  Retaining these purely transient buffers avoids allocating and
+/// zero-initialising several token-sized tensors at every block, while the
+/// returned residual branch remains owned by the caller until it has been
+/// added to `tokens`.
+#[derive(Default)]
+pub(crate) struct VitWorkspace {
+    q: Vec<f32>,
+    k: Vec<f32>,
+    v: Vec<f32>,
+    attention_heads: Vec<f32>,
+    attention_tokens: Vec<f32>,
+    qkv_fallback: Vec<f32>,
+    positions_f32: Vec<f32>,
+    positions_i64: Vec<i64>,
+}
+
 fn wname(layer_idx: usize, suffix: &str) -> String {
     format!("vit.blk.{layer_idx}.{suffix}")
 }
@@ -718,6 +737,49 @@ fn run_layernorm(
 /// *and* that tensor is actually present in `weights` — presence-gated,
 /// trap #3).
 #[allow(clippy::too_many_arguments)]
+fn run_linear_into(
+    x_in: &[f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    w_name: &str,
+    b_name: &str,
+    gelu: bool,
+    ls_name: Option<&str>,
+    weights: &Weights,
+    out: &mut [f32],
+) {
+    let weight = weights
+        .get_f32(w_name)
+        .unwrap_or_else(|| panic!("Weights missing f32 entry {w_name:?}"));
+    let bias = weights
+        .get_f32(b_name)
+        .unwrap_or_else(|| panic!("Weights missing f32 entry {b_name:?}"));
+    assert_eq!(out.len(), m * n, "linear output has the wrong length");
+    if !gelu {
+        if let Some(name) = ls_name {
+            if let Some(gamma) = weights.get_f32(name) {
+                if vestra_kernels::linear_bias_scale_f32_da3_base(
+                    m, n, k, x_in, weight, bias, gamma, out,
+                ) {
+                    return;
+                }
+            }
+        }
+    }
+    Da3ProjectionGemm.gemm(m, n, k, x_in, weight, out);
+    vestra_kernels::scalar::add_bias_rows(out, m, n, bias);
+    if gelu {
+        vestra_kernels::Kernels::detect().gelu(out);
+    }
+    if let Some(name) = ls_name {
+        if let Some(gamma) = weights.get_f32(name) {
+            vestra_kernels::scalar::layerscale(out, m, n, gamma);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_linear(
     x_in: &[f32],
     m: usize,
@@ -729,34 +791,10 @@ fn run_linear(
     ls_name: Option<&str>,
     weights: &Weights,
 ) -> Vec<f32> {
-    let weight = weights
-        .get_f32(w_name)
-        .unwrap_or_else(|| panic!("Weights missing f32 entry {w_name:?}"));
-    let bias = weights
-        .get_f32(b_name)
-        .unwrap_or_else(|| panic!("Weights missing f32 entry {b_name:?}"));
     let mut out = vec![0.0; m * n];
-    if !gelu {
-        if let Some(name) = ls_name {
-            if let Some(gamma) = weights.get_f32(name) {
-                if vestra_kernels::linear_bias_scale_f32_da3_base(
-                    m, n, k, x_in, weight, bias, gamma, &mut out,
-                ) {
-                    return out;
-                }
-            }
-        }
-    }
-    Da3ProjectionGemm.gemm(m, n, k, x_in, weight, &mut out);
-    vestra_kernels::scalar::add_bias_rows(&mut out, m, n, bias);
-    if gelu {
-        vestra_kernels::Kernels::detect().gelu(&mut out);
-    }
-    if let Some(name) = ls_name {
-        if let Some(gamma) = weights.get_f32(name) {
-            vestra_kernels::scalar::layerscale(&mut out, m, n, gamma);
-        }
-    }
+    run_linear_into(
+        x_in, m, k, n, w_name, b_name, gelu, ls_name, weights, &mut out,
+    );
     out
 }
 
@@ -780,6 +818,7 @@ fn run_attention(
     layer_idx: usize,
     weights: &Weights,
     attention_executor: Option<&dyn AttentionExecutor>,
+    workspace: &mut VitWorkspace,
 ) -> Vec<f32> {
     let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
     let embed = cfg.embed_dim as usize;
@@ -792,9 +831,13 @@ fn run_attention(
     // the layout `Op::Attention` requires. Pure data movement, done in
     // host Rust rather than as a graph op (see module doc: reshape/permute
     // isn't part of the approved Op set this task touches).
-    let mut q = vec![0f32; heads * n * head_dim];
-    let mut k = vec![0f32; heads * n * head_dim];
-    let mut v = vec![0f32; heads * n * head_dim];
+    let activation_len = heads * n * head_dim;
+    let mut q = std::mem::take(&mut workspace.q);
+    let mut k = std::mem::take(&mut workspace.k);
+    let mut v = std::mem::take(&mut workspace.v);
+    q.resize(activation_len, 0.0);
+    k.resize(activation_len, 0.0);
+    v.resize(activation_len, 0.0);
     let qkv_started = std::time::Instant::now();
     let qkv_weight = weights
         .get_f32(&wname(layer_idx, "attn_qkv.weight"))
@@ -806,7 +849,9 @@ fn run_attention(
     let pack_elapsed = if direct_qkv {
         std::time::Duration::ZERO
     } else {
-        let qkv = run_linear(
+        let mut qkv = std::mem::take(&mut workspace.qkv_fallback);
+        qkv.resize(n * 3 * embed, 0.0);
+        run_linear_into(
             ln1_out,
             n,
             embed,
@@ -816,6 +861,7 @@ fn run_attention(
             false,
             None,
             weights,
+            &mut qkv,
         );
         let pack_started = std::time::Instant::now();
         for t in 0..n {
@@ -829,6 +875,7 @@ fn run_attention(
                     .copy_from_slice(&row[2 * embed + src..2 * embed + src + head_dim]);
             }
         }
+        workspace.qkv_fallback = qkv;
         pack_started.elapsed()
     };
 
@@ -850,8 +897,10 @@ fn run_attention(
     // layer (`cfg.alt_start>=0 && i>=cfg.alt_start && i%2==1`); this function
     // never inspects `cfg.alt_start` itself.
     let n_special = 1 + cfg.num_register as usize;
-    let pos_yx: Vec<f32> = if use_rope {
-        let mut p = vec![0f32; n * 2];
+    let mut pos_yx = std::mem::take(&mut workspace.positions_f32);
+    if use_rope {
+        pos_yx.resize(n * 2, 0.0);
+        pos_yx.fill(0.0);
         let tokens_per_view = n_special + gh * gw;
         assert!(view_count > 0, "view_count must be non-zero");
         assert_eq!(
@@ -864,27 +913,30 @@ fn run_attention(
             for local_t in n_special..tokens_per_view {
                 let t = base + local_t;
                 if global {
-                    p[2 * t] = 1.0;
-                    p[2 * t + 1] = 1.0;
+                    pos_yx[2 * t] = 1.0;
+                    pos_yx[2 * t + 1] = 1.0;
                 } else {
                     let idx = local_t - n_special;
                     let row = idx / gw;
                     let col = idx % gw;
-                    p[2 * t] = (row + 1) as f32;
-                    p[2 * t + 1] = (col + 1) as f32;
+                    pos_yx[2 * t] = (row + 1) as f32;
+                    pos_yx[2 * t + 1] = (col + 1) as f32;
                 }
             }
         }
-        p
     } else {
-        Vec::new()
-    };
+        pos_yx.clear();
+    }
 
     if use_qknorm && use_rope {
         if let Some(executor) = attention_executor {
             if let Some(output) =
                 executor.run_attention(layer_idx, ln1_out, n, heads, head_dim, Some(&pos_yx))
             {
+                workspace.q = q;
+                workspace.k = k;
+                workspace.v = v;
+                workspace.positions_f32 = pos_yx;
                 return output;
             }
         }
@@ -909,7 +961,9 @@ fn run_attention(
             .get_f32(&k_beta_name)
             .unwrap_or_else(|| panic!("Weights missing f32 entry {k_beta_name:?}"));
         if use_rope {
-            let positions: Vec<i64> = pos_yx.iter().map(|&value| value as i64).collect();
+            let mut positions = std::mem::take(&mut workspace.positions_i64);
+            positions.clear();
+            positions.extend(pos_yx.iter().map(|&value| value as i64));
             used_fused_qk_norm_rope = vestra_kernels::qk_norm_rope_f32_da3_base(
                 &mut q,
                 &mut k,
@@ -921,6 +975,7 @@ fn run_attention(
                 cfg.rope_freq,
                 QK_NORM_EPS,
             );
+            workspace.positions_i64 = positions;
         }
         if !used_fused_qk_norm_rope {
             vestra_kernels::scalar::layernorm(
@@ -942,20 +997,25 @@ fn run_attention(
         }
     }
     if use_rope && !used_fused_qk_norm_rope {
-        let positions: Vec<i64> = pos_yx.iter().map(|&value| value as i64).collect();
+        let mut positions = std::mem::take(&mut workspace.positions_i64);
+        positions.clear();
+        positions.extend(pos_yx.iter().map(|&value| value as i64));
         vestra_kernels::rope2d(&mut q, heads, n, head_dim, &positions, cfg.rope_freq);
         vestra_kernels::rope2d(&mut k, heads, n, head_dim, &positions, cfg.rope_freq);
+        workspace.positions_i64 = positions;
     }
     let position_elapsed = position_started.elapsed();
     let core_started = std::time::Instant::now();
-    let mut attn_hnd = vec![0.0; heads * n * head_dim];
+    let mut attn_hnd = std::mem::take(&mut workspace.attention_heads);
+    attn_hnd.resize(activation_len, 0.0);
     vestra_kernels::attention(&q, &k, &v, heads, n, head_dim, &mut attn_hnd);
     let core_elapsed = core_started.elapsed();
 
     // Transpose head-major [heads, n, head_dim] back to token-major
     // [n, embed] before the output projection.
     let unpack_started = std::time::Instant::now();
-    let mut attn_tok = vec![0f32; n * embed];
+    let mut attn_tok = std::mem::take(&mut workspace.attention_tokens);
+    attn_tok.resize(n * embed, 0.0);
     for t in 0..n {
         for h in 0..heads {
             for d in 0..head_dim {
@@ -988,6 +1048,12 @@ fn run_attention(
             projection_started.elapsed().as_secs_f64() * 1e3,
         );
     }
+    workspace.q = q;
+    workspace.k = k;
+    workspace.v = v;
+    workspace.attention_heads = attn_hnd;
+    workspace.attention_tokens = attn_tok;
+    workspace.positions_f32 = pos_yx;
     output
 }
 
@@ -1016,7 +1082,7 @@ fn run_attention(
 ///   silently running the wrong FFN math. Only `"mlp"` (DA3-BASE) is
 ///   implemented by this function.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn vit_block_with_views(
+fn vit_block_with_views_workspace(
     tokens: &mut [f32],
     n: usize,
     gh: usize,
@@ -1031,6 +1097,7 @@ pub(crate) fn vit_block_with_views(
     mlp_executor: Option<&dyn MlpExecutor>,
     attention_executor: Option<&dyn AttentionExecutor>,
     transformer_tail_executor: Option<&dyn TransformerTailExecutor>,
+    workspace: &mut VitWorkspace,
 ) {
     let phase_profile = std::env::var_os("DA_PHASE_PROFILE").is_some();
     assert_eq!(
@@ -1086,6 +1153,7 @@ pub(crate) fn vit_block_with_views(
         layer_idx,
         weights,
         attention_executor,
+        workspace,
     );
     add_residual(tokens, &attn_out, residual_executor);
     let attention_elapsed = attention_started.elapsed();
@@ -1138,6 +1206,48 @@ pub(crate) fn vit_block_with_views(
     }
 }
 
+/// Runs a transformer block with fresh transient attention buffers.
+///
+/// This remains the compatibility route for the multiview adapters.  The
+/// single-view inference path below keeps one workspace for its whole block
+/// stack.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn vit_block_with_views(
+    tokens: &mut [f32],
+    n: usize,
+    gh: usize,
+    gw: usize,
+    global: bool,
+    view_count: usize,
+    cfg: &ModelConfig,
+    layer_idx: usize,
+    weights: &Weights,
+    backend: &dyn Backend,
+    residual_executor: Option<&dyn ResidualAddExecutor>,
+    mlp_executor: Option<&dyn MlpExecutor>,
+    attention_executor: Option<&dyn AttentionExecutor>,
+    transformer_tail_executor: Option<&dyn TransformerTailExecutor>,
+) {
+    let mut workspace = VitWorkspace::default();
+    vit_block_with_views_workspace(
+        tokens,
+        n,
+        gh,
+        gw,
+        global,
+        view_count,
+        cfg,
+        layer_idx,
+        weights,
+        backend,
+        residual_executor,
+        mlp_executor,
+        attention_executor,
+        transformer_tail_executor,
+        &mut workspace,
+    );
+}
+
 /// Runs a transformer block for one view.
 ///
 /// Multi-view global attention uses the internal [`vit_block_with_views`]
@@ -1173,6 +1283,45 @@ pub(crate) fn vit_block_with_residual(
         mlp_executor,
         attention_executor,
         transformer_tail_executor,
+    );
+}
+
+/// Single-view block route sharing an attention scratch workspace with its
+/// neighbouring blocks.  It intentionally leaves the public compatibility
+/// entry point above unchanged for the multiview schedulers.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn vit_block_with_residual_workspace(
+    tokens: &mut [f32],
+    n: usize,
+    gh: usize,
+    gw: usize,
+    global: bool,
+    cfg: &ModelConfig,
+    layer_idx: usize,
+    weights: &Weights,
+    backend: &dyn Backend,
+    residual_executor: Option<&dyn ResidualAddExecutor>,
+    mlp_executor: Option<&dyn MlpExecutor>,
+    attention_executor: Option<&dyn AttentionExecutor>,
+    transformer_tail_executor: Option<&dyn TransformerTailExecutor>,
+    workspace: &mut VitWorkspace,
+) {
+    vit_block_with_views_workspace(
+        tokens,
+        n,
+        gh,
+        gw,
+        global,
+        1,
+        cfg,
+        layer_idx,
+        weights,
+        backend,
+        residual_executor,
+        mlp_executor,
+        attention_executor,
+        transformer_tail_executor,
+        workspace,
     );
 }
 
@@ -1363,6 +1512,77 @@ mod tests {
             tokens.iter().all(|v| v.is_finite()),
             "output must not contain NaN/Inf"
         );
+    }
+
+    #[test]
+    fn attention_workspace_matches_fresh_route_after_reuse() {
+        let cfg = test_cfg(8, 2, 4, 16);
+        let weights = synthetic_weights(&cfg, 0, true, false);
+        let backend = CpuBackend::new();
+        let n = 5usize;
+        let mut rng = Xorshift32(0xA771_0A11);
+        let input = random_vec(&mut rng, n * cfg.embed_dim as usize);
+
+        let mut fresh = input.clone();
+        vit_block_with_residual(
+            &mut fresh, n, 2, 2, false, &cfg, 0, &weights, &backend, None, None, None, None,
+        );
+
+        let mut workspace = VitWorkspace::default();
+        let mut reused = input.clone();
+        vit_block_with_residual_workspace(
+            &mut reused,
+            n,
+            2,
+            2,
+            false,
+            &cfg,
+            0,
+            &weights,
+            &backend,
+            None,
+            None,
+            None,
+            None,
+            &mut workspace,
+        );
+        for buffer in [
+            &mut workspace.q,
+            &mut workspace.k,
+            &mut workspace.v,
+            &mut workspace.attention_heads,
+            &mut workspace.attention_tokens,
+            &mut workspace.qkv_fallback,
+            &mut workspace.positions_f32,
+        ] {
+            buffer.fill(f32::NAN);
+        }
+        workspace.positions_i64.fill(i64::MIN);
+
+        let mut reused_after_poison = input;
+        vit_block_with_residual_workspace(
+            &mut reused_after_poison,
+            n,
+            2,
+            2,
+            false,
+            &cfg,
+            0,
+            &weights,
+            &backend,
+            None,
+            None,
+            None,
+            None,
+            &mut workspace,
+        );
+
+        for ((expected, first_reuse), second_reuse) in
+            fresh.iter().zip(&reused).zip(&reused_after_poison)
+        {
+            assert_eq!(expected.to_bits(), first_reuse.to_bits());
+            assert_eq!(expected.to_bits(), second_reuse.to_bits());
+        }
     }
 
     #[test]
