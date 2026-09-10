@@ -399,24 +399,50 @@ fn feature_fusion(
     let mut out = overwrite_buffer(workspace, c * target_h * target_w);
     let out_started = std::time::Instant::now();
     let resize_started = std::time::Instant::now();
-    let mut resized = overwrite_buffer(workspace, c * target_h * target_w);
-    bilinear_resize_align_corners(&y, c, th, tw, target_h, target_w, &mut resized);
-    conv2d(
-        &resized,
-        c,
-        target_h,
-        target_w,
-        out_w,
-        c,
-        1,
-        1,
-        1,
-        0,
-        Some(out_b),
-        gemm,
-        &mut out,
-    );
-    recycle_buffer(workspace, resized);
+    if std::env::var_os("DA3_COMMUTE_FUSION_RESIZE_1X1").is_some() {
+        // A spatially constant 1x1 affine projection commutes with bilinear
+        // resize: resize(W*x + b) = W*resize(x) + b. Projecting on the
+        // smaller source map therefore eliminates up to three quarters of
+        // this branch's GEMM work. It is kept opt-in until real F32 parity
+        // and whole-head timing qualify the changed evaluation order.
+        let mut projected = overwrite_buffer(workspace, c * th * tw);
+        conv2d(
+            &y,
+            c,
+            th,
+            tw,
+            out_w,
+            c,
+            1,
+            1,
+            1,
+            0,
+            Some(out_b),
+            gemm,
+            &mut projected,
+        );
+        bilinear_resize_align_corners(&projected, c, th, tw, target_h, target_w, &mut out);
+        recycle_buffer(workspace, projected);
+    } else {
+        let mut resized = overwrite_buffer(workspace, c * target_h * target_w);
+        bilinear_resize_align_corners(&y, c, th, tw, target_h, target_w, &mut resized);
+        conv2d(
+            &resized,
+            c,
+            target_h,
+            target_w,
+            out_w,
+            c,
+            1,
+            1,
+            1,
+            0,
+            Some(out_b),
+            gemm,
+            &mut out,
+        );
+        recycle_buffer(workspace, resized);
+    }
     let resize_elapsed = resize_started.elapsed();
     if profile {
         eprintln!(
@@ -1444,6 +1470,79 @@ mod tests {
         );
 
         assert_ne!(out_with_pe.depth, out_without_pe.depth);
+    }
+
+    #[test]
+    fn resize_and_1x1_projection_commute_within_f32_envelope() {
+        let (c, source_h, source_w, target_h, target_w) = (2, 2, 3, 5, 7);
+        let input = vec![
+            -1.0, 0.5, 2.0, 1.0, -0.5, 3.0, 0.25, -2.0, 1.5, 2.5, -1.5, 0.75,
+        ];
+        // OIHW, one 1x1 coefficient per input channel.
+        let weight = vec![0.75, -0.25, -0.5, 1.25];
+        let bias = vec![0.125, -0.375];
+        let gemm = BlisOrFaerGemm;
+
+        let mut resized = vec![0.0; c * target_h * target_w];
+        bilinear_resize_align_corners(
+            &input,
+            c,
+            source_h,
+            source_w,
+            target_h,
+            target_w,
+            &mut resized,
+        );
+        let mut resize_then_project = vec![0.0; c * target_h * target_w];
+        conv2d(
+            &resized,
+            c,
+            target_h,
+            target_w,
+            &weight,
+            c,
+            1,
+            1,
+            1,
+            0,
+            Some(&bias),
+            &gemm,
+            &mut resize_then_project,
+        );
+
+        let mut projected = vec![0.0; c * source_h * source_w];
+        conv2d(
+            &input,
+            c,
+            source_h,
+            source_w,
+            &weight,
+            c,
+            1,
+            1,
+            1,
+            0,
+            Some(&bias),
+            &gemm,
+            &mut projected,
+        );
+        let mut project_then_resize = vec![0.0; c * target_h * target_w];
+        bilinear_resize_align_corners(
+            &projected,
+            c,
+            source_h,
+            source_w,
+            target_h,
+            target_w,
+            &mut project_then_resize,
+        );
+
+        for (baseline, commuted) in resize_then_project.iter().zip(&project_then_resize) {
+            assert!(
+                (baseline - commuted).abs() <= 1e-6,
+                "1x1 projection and resize diverged: {baseline} vs {commuted}"
+            );
+        }
     }
 
     #[test]
