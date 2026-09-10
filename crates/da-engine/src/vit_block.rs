@@ -919,7 +919,7 @@ fn run_attention(
     let qkv_bias = weights.get_f32(&wname(layer_idx, "attn_qkv.bias")).unwrap();
     let direct_qkv =
         vestra_kernels::qkv_f32_da3_base(ln1_out, qkv_weight, qkv_bias, &mut q, &mut k, &mut v);
-    let qkv_elapsed = qkv_started.elapsed();
+    let mut qkv_elapsed = qkv_started.elapsed();
     let pack_elapsed = if direct_qkv {
         std::time::Duration::ZERO
     } else {
@@ -937,6 +937,10 @@ fn run_attention(
             weights,
             &mut qkv,
         );
+        // The direct-kernel call above returns quickly when disabled. Keep
+        // the QKV timer open through the semantically equivalent BLIS/Faer
+        // projection so `DA_PHASE_PROFILE` compares complete branches.
+        qkv_elapsed = qkv_started.elapsed();
         let pack_started = std::time::Instant::now();
         for t in 0..n {
             let row = &qkv[t * 3 * embed..(t + 1) * 3 * embed];
