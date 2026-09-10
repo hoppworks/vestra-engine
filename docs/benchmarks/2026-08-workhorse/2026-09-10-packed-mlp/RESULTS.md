@@ -45,3 +45,25 @@ The change is neither accepted nor promoted: its explicit admission target is
 `<= 43 ms` aggregate MLP time, including all runtime work. The first-stage
 panel layout is retained behind its opt-in switch solely so the next
 cache-blocked/superkernel iteration has a real-model parity and timing route.
+
+## Iteration 63 — cache-blocked 12x32 variant (reverted)
+
+Kernel commit `6a53f8b` changed the candidate to 12x32 register tiles and a
+two-dimensional 60-row by 256-column work scheduler. It retained the same
+packed model weights and ascending-K FMA order, and passed the same four-image
+parity gate:
+
+| Image | Pearson r | MAE |
+|---|---:|---:|
+| canyon | 0.9999936282 | 0.0018124947 |
+| desk | 0.9999782566 | 0.0017728056 |
+| mountains | 0.9999855792 | 0.0036749605 |
+| street | 0.9999721254 | 0.0008209984 |
+
+It failed the performance admission decisively in alternating same-binary
+profiles while the Workhorse was busy: normal MLP totals were 73.269 ms and
+65.467 ms; the 12x32 candidate was 136.275 ms and 149.854 ms. This is large
+enough to reject even before an idle-machine study. Engine commit `e669576`
+was cleanly superseded by a dependency rollback to `c650933`; the failed
+kernel revision remains only in the independently versioned kernel history
+and is not imported by Vestra Engine.
