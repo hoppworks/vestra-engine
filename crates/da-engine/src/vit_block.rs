@@ -685,15 +685,22 @@ fn add_residual(
 /// (`QK_NORM_EPS = 1e-5f`) for the full provenance.
 pub const QK_NORM_EPS: f32 = 1e-5;
 
-/// Reusable CPU scratch for the attention branch of a ViT block.
+/// Reusable CPU scratch for a ViT block's attention and MLP branches.
 ///
 /// The DA3-BASE inference path visits twelve blocks with the same activation
-/// geometry.  Retaining these purely transient buffers avoids allocating and
-/// zero-initialising several token-sized tensors at every block, while the
-/// returned residual branch remains owned by the caller until it has been
-/// added to `tokens`.
+/// geometry. Retaining these purely transient buffers avoids allocating and
+/// zero-initialising several token-sized tensors at every block. Branch
+/// buffers remain owned by this workspace until their residual addition has
+/// completed.
 #[derive(Default)]
 pub(crate) struct VitWorkspace {
+    // `norm` is shared by LN1 and LN2. The attention branch has consumed
+    // LN1 before LN2 overwrites it.
+    norm: Vec<f32>,
+    // `branch` is shared by the MLP's FC2 output and retained only until its
+    // residual addition completes.
+    branch: Vec<f32>,
+    mlp_hidden: Vec<f32>,
     q: Vec<f32>,
     k: Vec<f32>,
     v: Vec<f32>,
@@ -712,6 +719,31 @@ fn wname(layer_idx: usize, suffix: &str) -> String {
 /// activation copy.  The model parameters are immutable and borrowed from
 /// `Weights`; copying them into a per-operation graph arena was pure
 /// overhead on the inference path.
+fn run_layernorm_into(
+    x_in: &[f32],
+    rows: usize,
+    cols: usize,
+    gamma_name: &str,
+    beta_name: &str,
+    eps: f32,
+    weights: &Weights,
+    out: &mut [f32],
+) {
+    assert_eq!(
+        out.len(),
+        x_in.len(),
+        "layernorm output has the wrong length"
+    );
+    out.copy_from_slice(x_in);
+    let gamma = weights
+        .get_f32(gamma_name)
+        .unwrap_or_else(|| panic!("Weights missing f32 entry {gamma_name:?}"));
+    let beta = weights
+        .get_f32(beta_name)
+        .unwrap_or_else(|| panic!("Weights missing f32 entry {beta_name:?}"));
+    vestra_kernels::scalar::layernorm(out, rows, cols, gamma, beta, eps);
+}
+
 fn run_layernorm(
     x_in: &[f32],
     rows: usize,
@@ -721,14 +753,10 @@ fn run_layernorm(
     eps: f32,
     weights: &Weights,
 ) -> Vec<f32> {
-    let mut out = x_in.to_vec();
-    let gamma = weights
-        .get_f32(gamma_name)
-        .unwrap_or_else(|| panic!("Weights missing f32 entry {gamma_name:?}"));
-    let beta = weights
-        .get_f32(beta_name)
-        .unwrap_or_else(|| panic!("Weights missing f32 entry {beta_name:?}"));
-    vestra_kernels::scalar::layernorm(&mut out, rows, cols, gamma, beta, eps);
+    let mut out = vec![0.0; x_in.len()];
+    run_layernorm_into(
+        x_in, rows, cols, gamma_name, beta_name, eps, weights, &mut out,
+    );
     out
 }
 
@@ -1118,12 +1146,12 @@ fn vit_block_with_views_workspace(
     let eps = cfg.ln_eps;
 
     // --- Attention sub-block ---
-    // `tokens` is only read by `run_layernorm`/`run_attention` (both
-    // operate on fresh Vec<f32> copies via their mini-graphs' own arenas),
-    // so it still holds the pre-attention residual right up until the
-    // in-place `vestra_kernels::scalar::add` below.
+    // `tokens` is read into reusable LN scratch, then remains the
+    // pre-attention residual until the in-place addition below.
     let ln1_started = std::time::Instant::now();
-    let ln1 = run_layernorm(
+    let mut norm = std::mem::take(&mut workspace.norm);
+    norm.resize(n * embed, 0.0);
+    run_layernorm_into(
         tokens,
         n,
         embed,
@@ -1131,19 +1159,21 @@ fn vit_block_with_views_workspace(
         &wname(layer_idx, "norm1.bias"),
         eps,
         weights,
+        &mut norm,
     );
     let ln1_elapsed = ln1_started.elapsed();
     if let Some(executor) = transformer_tail_executor {
         if let Some(result) =
-            executor.run_tail(layer_idx, tokens, &ln1, n, gh, gw, global, view_count, cfg)
+            executor.run_tail(layer_idx, tokens, &norm, n, gh, gw, global, view_count, cfg)
         {
             tokens.copy_from_slice(&result);
+            workspace.norm = norm;
             return;
         }
     }
     let attention_started = std::time::Instant::now();
     let attn_out = run_attention(
-        &ln1,
+        &norm,
         n,
         gh,
         gw,
@@ -1160,10 +1190,11 @@ fn vit_block_with_views_workspace(
 
     // --- MLP sub-block --- (same "tokens still holds the residual" trick)
     let mlp_started = std::time::Instant::now();
-    let m = if let Some(executor) = mlp_executor {
-        executor.run_mlp(layer_idx, tokens, n)
+    if let Some(executor) = mlp_executor {
+        let m = executor.run_mlp(layer_idx, tokens, n);
+        add_residual(tokens, &m, residual_executor);
     } else {
-        let ln2 = run_layernorm(
+        run_layernorm_into(
             tokens,
             n,
             embed,
@@ -1171,9 +1202,12 @@ fn vit_block_with_views_workspace(
             &wname(layer_idx, "norm2.bias"),
             eps,
             weights,
+            &mut norm,
         );
-        let h = run_linear(
-            &ln2,
+        let mut hidden = std::mem::take(&mut workspace.mlp_hidden);
+        hidden.resize(n * mlp_hidden, 0.0);
+        run_linear_into(
+            &norm,
             n,
             embed,
             mlp_hidden,
@@ -1182,9 +1216,12 @@ fn vit_block_with_views_workspace(
             true,
             None,
             weights,
+            &mut hidden,
         );
-        run_linear(
-            &h,
+        let mut branch = std::mem::take(&mut workspace.branch);
+        branch.resize(n * embed, 0.0);
+        run_linear_into(
+            &hidden,
             n,
             mlp_hidden,
             embed,
@@ -1193,9 +1230,13 @@ fn vit_block_with_views_workspace(
             false,
             Some(&wname(layer_idx, "ls2")),
             weights,
-        )
-    };
-    add_residual(tokens, &m, residual_executor);
+            &mut branch,
+        );
+        add_residual(tokens, &branch, residual_executor);
+        workspace.mlp_hidden = hidden;
+        workspace.branch = branch;
+    }
+    workspace.norm = norm;
     if phase_profile {
         eprintln!(
             "phase: block[{layer_idx}] ln1={:.3}ms attention={:.3}ms mlp_with_ln2={:.3}ms",
@@ -1547,6 +1588,9 @@ mod tests {
             &mut workspace,
         );
         for buffer in [
+            &mut workspace.norm,
+            &mut workspace.branch,
+            &mut workspace.mlp_hidden,
             &mut workspace.q,
             &mut workspace.k,
             &mut workspace.v,
