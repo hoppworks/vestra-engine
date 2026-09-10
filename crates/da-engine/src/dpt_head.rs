@@ -641,7 +641,7 @@ fn dpt_head_impl(
                 let ow = (grid_w - 1) * 4 + 4;
                 let mut out = overwrite_buffer(workspace, oc[0] * oh * ow);
                 let transpose_started = std::time::Instant::now();
-                let used_oc16 = std::env::var_os("DA3_TRANSPOSE_OC16").is_some()
+                let used_oc16 = std::env::var_os("DA3_DISABLE_TRANSPOSE_OC16").is_none()
                     && wino_cache
                         .get_or_prepare_transpose_oc16(
                             weights,
@@ -707,7 +707,7 @@ fn dpt_head_impl(
                 let ow = (grid_w - 1) * 2 + 2;
                 let mut out = overwrite_buffer(workspace, oc[1] * oh * ow);
                 let transpose_started = std::time::Instant::now();
-                let used_oc16 = std::env::var_os("DA3_TRANSPOSE_OC16").is_some()
+                let used_oc16 = std::env::var_os("DA3_DISABLE_TRANSPOSE_OC16").is_none()
                     && wino_cache
                         .get_or_prepare_transpose_oc16(
                             weights,
