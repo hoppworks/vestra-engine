@@ -91,6 +91,60 @@ pub trait MlpExecutor {
     fn run_mlp(&self, layer_idx: usize, input: &[f32], rows: usize) -> Vec<f32>;
 }
 
+/// Execution seam for the input-independent packed QKV weights. The direct
+/// HND output layout remains owned by `run_attention`; this seam changes only
+/// the model-owned weight layout selected before timed inference starts.
+pub trait QkvExecutor {
+    fn run_qkv(
+        &self,
+        layer_idx: usize,
+        input: &[f32],
+        bias: &[f32],
+        q: &mut [f32],
+        k: &mut [f32],
+        v: &mut [f32],
+    ) -> bool;
+}
+
+/// Optional DA3-BASE QKV weight packing. It is selected only with
+/// `DA3_PACKED_QKV=1`; the normal direct QKV route remains the default.
+pub struct PackedQkvExecutor {
+    layers: Vec<PreparedLinearF32>,
+}
+
+impl PackedQkvExecutor {
+    pub fn new(cfg: &ModelConfig, weights: &Weights) -> Option<Self> {
+        if cfg.embed_dim != 768 || cfg.num_heads != 12 || cfg.head_dim != 64 {
+            return None;
+        }
+        let mut layers = Vec::with_capacity(cfg.depth as usize);
+        for layer_idx in 0..cfg.depth as usize {
+            layers.push(PreparedLinearF32::try_new(
+                weights.get_f32(&wname(layer_idx, "attn_qkv.weight"))?,
+                768,
+                2304,
+            )?);
+        }
+        Some(Self { layers })
+    }
+}
+
+impl QkvExecutor for PackedQkvExecutor {
+    fn run_qkv(
+        &self,
+        layer_idx: usize,
+        input: &[f32],
+        bias: &[f32],
+        q: &mut [f32],
+        k: &mut [f32],
+        v: &mut [f32],
+    ) -> bool {
+        self.layers
+            .get(layer_idx)
+            .is_some_and(|layer| layer.run_qkv_da3_base(input, bias, q, k, v))
+    }
+}
+
 /// Experimental CPU MLP executor backed by model-load-time panel-packed F32
 /// weights. It is selected only through `DA3_PACKED_MLP=1`; normal inference
 /// remains on the qualified BLIS route until this candidate wins end-to-end.
@@ -1071,6 +1125,7 @@ fn run_attention(
     cfg: &ModelConfig,
     layer_idx: usize,
     weights: &Weights,
+    qkv_executor: Option<&dyn QkvExecutor>,
     attention_executor: Option<&dyn AttentionExecutor>,
     workspace: &mut VitWorkspace,
 ) -> Vec<f32> {
@@ -1097,8 +1152,11 @@ fn run_attention(
         .get_f32(&wname(layer_idx, "attn_qkv.weight"))
         .unwrap();
     let qkv_bias = weights.get_f32(&wname(layer_idx, "attn_qkv.bias")).unwrap();
-    let direct_qkv =
-        vestra_kernels::qkv_f32_da3_base(ln1_out, qkv_weight, qkv_bias, &mut q, &mut k, &mut v);
+    let direct_qkv = qkv_executor.is_some_and(|executor| {
+        executor.run_qkv(layer_idx, ln1_out, qkv_bias, &mut q, &mut k, &mut v)
+    }) || vestra_kernels::qkv_f32_da3_base(
+        ln1_out, qkv_weight, qkv_bias, &mut q, &mut k, &mut v,
+    );
     let mut qkv_elapsed = qkv_started.elapsed();
     let pack_elapsed = if direct_qkv {
         std::time::Duration::ZERO
@@ -1356,6 +1414,7 @@ fn vit_block_with_views_workspace(
     _backend: &dyn Backend,
     residual_executor: Option<&dyn ResidualAddExecutor>,
     mlp_executor: Option<&dyn MlpExecutor>,
+    qkv_executor: Option<&dyn QkvExecutor>,
     attention_executor: Option<&dyn AttentionExecutor>,
     transformer_tail_executor: Option<&dyn TransformerTailExecutor>,
     workspace: &mut VitWorkspace,
@@ -1415,6 +1474,7 @@ fn vit_block_with_views_workspace(
         cfg,
         layer_idx,
         weights,
+        qkv_executor,
         attention_executor,
         workspace,
     );
@@ -1503,6 +1563,7 @@ pub(crate) fn vit_block_with_views(
     backend: &dyn Backend,
     residual_executor: Option<&dyn ResidualAddExecutor>,
     mlp_executor: Option<&dyn MlpExecutor>,
+    qkv_executor: Option<&dyn QkvExecutor>,
     attention_executor: Option<&dyn AttentionExecutor>,
     transformer_tail_executor: Option<&dyn TransformerTailExecutor>,
 ) {
@@ -1520,6 +1581,7 @@ pub(crate) fn vit_block_with_views(
         backend,
         residual_executor,
         mlp_executor,
+        qkv_executor,
         attention_executor,
         transformer_tail_executor,
         &mut workspace,
@@ -1543,6 +1605,7 @@ pub(crate) fn vit_block_with_residual(
     backend: &dyn Backend,
     residual_executor: Option<&dyn ResidualAddExecutor>,
     mlp_executor: Option<&dyn MlpExecutor>,
+    qkv_executor: Option<&dyn QkvExecutor>,
     attention_executor: Option<&dyn AttentionExecutor>,
     transformer_tail_executor: Option<&dyn TransformerTailExecutor>,
 ) {
@@ -1559,6 +1622,7 @@ pub(crate) fn vit_block_with_residual(
         backend,
         residual_executor,
         mlp_executor,
+        qkv_executor,
         attention_executor,
         transformer_tail_executor,
     );
@@ -1580,6 +1644,7 @@ pub(crate) fn vit_block_with_residual_workspace(
     backend: &dyn Backend,
     residual_executor: Option<&dyn ResidualAddExecutor>,
     mlp_executor: Option<&dyn MlpExecutor>,
+    qkv_executor: Option<&dyn QkvExecutor>,
     attention_executor: Option<&dyn AttentionExecutor>,
     transformer_tail_executor: Option<&dyn TransformerTailExecutor>,
     workspace: &mut VitWorkspace,
@@ -1597,6 +1662,7 @@ pub(crate) fn vit_block_with_residual_workspace(
         backend,
         residual_executor,
         mlp_executor,
+        qkv_executor,
         attention_executor,
         transformer_tail_executor,
         workspace,
@@ -1616,7 +1682,7 @@ pub fn vit_block(
     backend: &dyn Backend,
 ) {
     vit_block_with_residual(
-        tokens, n, gh, gw, global, cfg, layer_idx, weights, backend, None, None, None, None,
+        tokens, n, gh, gw, global, cfg, layer_idx, weights, backend, None, None, None, None, None,
     );
 }
 
@@ -1834,7 +1900,7 @@ mod tests {
 
         let mut fresh = input.clone();
         vit_block_with_residual(
-            &mut fresh, n, 2, 2, false, &cfg, 0, &weights, &backend, None, None, None, None,
+            &mut fresh, n, 2, 2, false, &cfg, 0, &weights, &backend, None, None, None, None, None,
         );
 
         let mut workspace = VitWorkspace::default();
@@ -1849,6 +1915,7 @@ mod tests {
             0,
             &weights,
             &backend,
+            None,
             None,
             None,
             None,
@@ -1887,6 +1954,7 @@ mod tests {
             0,
             &weights,
             &backend,
+            None,
             None,
             None,
             None,

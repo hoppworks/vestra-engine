@@ -1783,7 +1783,7 @@ dependencies = [
 [[package]]
 name = "vestra-kernels"
 version = "0.1.0"
-source = "git+https://github.com/hoppworks/vestra-kernels?rev=7b41e5e#7b41e5e0963e0618bf4dcccf2dd167ca4885045e"
+source = "git+https://github.com/hoppworks/vestra-kernels?rev=865a9d4#865a9d41df5bdf12090cfeb122db86be8701cc3a"
 dependencies = [
  "cudarc",
  "faer",

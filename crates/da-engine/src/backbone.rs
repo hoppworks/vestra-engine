@@ -62,7 +62,8 @@
 use crate::vit_block::vit_block;
 use crate::vit_block::{
     vit_block_with_residual, vit_block_with_residual_workspace, vit_block_with_views,
-    AttentionExecutor, MlpExecutor, ResidualAddExecutor, TransformerTailExecutor, VitWorkspace,
+    AttentionExecutor, MlpExecutor, QkvExecutor, ResidualAddExecutor, TransformerTailExecutor,
+    VitWorkspace,
 };
 use crate::ModelConfig;
 use da_graph::{Backend, Weights};
@@ -231,6 +232,7 @@ pub struct Backbone<'a> {
     pub backend: &'a dyn Backend,
     residual_executor: Option<&'a dyn ResidualAddExecutor>,
     mlp_executor: Option<&'a dyn MlpExecutor>,
+    qkv_executor: Option<&'a dyn QkvExecutor>,
     attention_executor: Option<&'a dyn AttentionExecutor>,
     transformer_tail_executor: Option<&'a dyn TransformerTailExecutor>,
 }
@@ -243,6 +245,7 @@ impl<'a> Backbone<'a> {
             backend,
             residual_executor: None,
             mlp_executor: None,
+            qkv_executor: None,
             attention_executor: None,
             transformer_tail_executor: None,
         }
@@ -261,23 +264,26 @@ impl<'a> Backbone<'a> {
             backend,
             residual_executor: Some(residual_executor),
             mlp_executor: None,
+            qkv_executor: None,
             attention_executor: None,
             transformer_tail_executor: None,
         }
     }
 
-    pub(crate) fn new_with_mlp(
+    pub(crate) fn new_with_cpu_optimizers(
         cfg: &'a ModelConfig,
         weights: &'a Weights,
         backend: &'a dyn Backend,
-        mlp_executor: &'a dyn MlpExecutor,
+        mlp_executor: Option<&'a dyn MlpExecutor>,
+        qkv_executor: Option<&'a dyn QkvExecutor>,
     ) -> Self {
         Self {
             cfg,
             weights,
             backend,
             residual_executor: None,
-            mlp_executor: Some(mlp_executor),
+            mlp_executor,
+            qkv_executor,
             attention_executor: None,
             transformer_tail_executor: None,
         }
@@ -296,6 +302,7 @@ impl<'a> Backbone<'a> {
             backend,
             residual_executor: None,
             mlp_executor: None,
+            qkv_executor: None,
             attention_executor: Some(attention_executor),
             transformer_tail_executor: None,
         }
@@ -314,6 +321,7 @@ impl<'a> Backbone<'a> {
             backend,
             residual_executor: None,
             mlp_executor: None,
+            qkv_executor: None,
             attention_executor: None,
             transformer_tail_executor: Some(transformer_tail_executor),
         }
@@ -361,6 +369,7 @@ impl<'a> Backbone<'a> {
                     self.backend,
                     self.residual_executor,
                     self.mlp_executor,
+                    self.qkv_executor,
                     self.attention_executor,
                     self.transformer_tail_executor,
                 );
@@ -471,6 +480,7 @@ impl<'a> Backbone<'a> {
                 self.backend,
                 self.residual_executor,
                 self.mlp_executor,
+                self.qkv_executor,
                 self.attention_executor,
                 self.transformer_tail_executor,
                 &mut vit_workspace,
@@ -788,6 +798,7 @@ impl<'a> Backbone<'a> {
                     self.backend,
                     self.residual_executor,
                     self.mlp_executor,
+                    self.qkv_executor,
                     self.attention_executor,
                     self.transformer_tail_executor,
                 );
@@ -809,6 +820,7 @@ impl<'a> Backbone<'a> {
                         self.backend,
                         self.residual_executor,
                         self.mlp_executor,
+                        self.qkv_executor,
                         self.attention_executor,
                         self.transformer_tail_executor,
                     );

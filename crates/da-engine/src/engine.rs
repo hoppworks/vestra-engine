@@ -52,9 +52,9 @@ use crate::pos_embed::{prepare_tokens, PosEmbedCache};
 use crate::pose::cam_pose;
 use crate::preprocess::preprocess;
 use crate::uv_embed::UvEmbedCache;
-use crate::vit_block::PackedMlpExecutor;
 #[cfg(feature = "cuda-residual-oracle")]
 use crate::vit_block::{CudaAttentionExecutor, CudaMlpExecutor, CudaTransformerTailExecutor};
+use crate::vit_block::{PackedMlpExecutor, PackedQkvExecutor};
 use crate::{dpt_head, ModelConfig};
 
 /// Quantization preference for [`weights_from_gguf`] / [`Engine::load`].
@@ -229,6 +229,7 @@ pub struct Engine {
     wino_cache: WinogradFilterCache,
     head_workspace: HeadWorkspace,
     packed_mlp: Option<PackedMlpExecutor>,
+    packed_qkv: Option<PackedQkvExecutor>,
     #[cfg(feature = "cuda-residual-oracle")]
     cuda_residual: Option<vestra_kernels::cuda::CudaRuntime>,
     #[cfg(feature = "cuda-residual-oracle")]
@@ -261,6 +262,10 @@ impl Engine {
             || std::env::var_os("DA3_STRIP_MLP").is_some())
         .then(|| PackedMlpExecutor::new(&cfg, &weights))
         .flatten();
+        let packed_qkv = std::env::var_os("DA3_PACKED_QKV")
+            .is_some()
+            .then(|| PackedQkvExecutor::new(&cfg, &weights))
+            .flatten();
         Ok(Engine {
             cfg,
             weights,
@@ -270,6 +275,7 @@ impl Engine {
             wino_cache: WinogradFilterCache::new(),
             head_workspace: HeadWorkspace::new(),
             packed_mlp,
+            packed_qkv,
             #[cfg(feature = "cuda-residual-oracle")]
             cuda_residual: None,
             #[cfg(feature = "cuda-residual-oracle")]
@@ -426,8 +432,18 @@ impl Engine {
     }
 
     fn backbone(&self) -> Backbone<'_> {
-        if let Some(executor) = self.packed_mlp.as_ref() {
-            return Backbone::new_with_mlp(&self.cfg, &self.weights, &self.backend, executor);
+        if self.packed_mlp.is_some() || self.packed_qkv.is_some() {
+            return Backbone::new_with_cpu_optimizers(
+                &self.cfg,
+                &self.weights,
+                &self.backend,
+                self.packed_mlp
+                    .as_ref()
+                    .map(|executor| executor as &dyn crate::vit_block::MlpExecutor),
+                self.packed_qkv
+                    .as_ref()
+                    .map(|executor| executor as &dyn crate::vit_block::QkvExecutor),
+            );
         }
         #[cfg(feature = "cuda-residual-oracle")]
         if let Some(executor) = self.cuda_mlp.as_ref() {
