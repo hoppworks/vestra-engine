@@ -106,6 +106,26 @@ pub const HEAD_NORM_EPS: f32 = 1e-5;
 /// note.
 const DEFAULT_OC: [usize; 4] = [96, 192, 384, 768];
 
+/// True for DA3-BASE's final DPT resize geometry in either image orientation.
+///
+/// The model sees image dimensions as `(height, width)`, whereas the public
+/// resize contract is commonly written `504×336`. Keeping the two accepted
+/// tuples together prevents the landscape production path from silently
+/// missing the otherwise exact fused resize + Winograd kernel.
+#[inline]
+fn is_da3_base_final_resize_shape(
+    feat_half: usize,
+    feature_h: usize,
+    feature_w: usize,
+    output_h: usize,
+    output_w: usize,
+) -> bool {
+    matches!(
+        (feat_half, feature_h, feature_w, output_h, output_w),
+        (64, 192, 288, 336, 504) | (64, 288, 192, 504, 336)
+    )
+}
+
 /// Fixed channel width of every `layer{i}_rn`/refinenet fusion stage.
 /// Matches the C++ reference's `head.scratch.*` tensor shapes (all
 /// `layer{i}_rn`/`rn{i}.rc*`/`rn{i}.out` convs are 128-channel).
@@ -830,12 +850,13 @@ fn dpt_head_impl(
     let mut mid = overwrite_buffer(workspace, 32 * h * w);
     let out2a_started = std::time::Instant::now();
     let final_f4_wino = std::env::var_os("DA3_WINO_F4_FINAL").is_some()
-        && (feat_half, fh, fw, h, w) == (64, 288, 192, 504, 336);
+        && is_da3_base_final_resize_shape(feat_half, fh, fw, h, w);
     let fused_final_resize_wino = std::env::var_os("DA3_DISABLE_FUSE_FINAL_RESIZE_WINO").is_none()
         // This candidate is deliberately exact-shape gated: DA3-BASE F32's
-        // 504x336 output is a 64x288x192 feature map resized to 64x504x336.
-        // Other geometries keep the established materialized route.
-        && (feat_half, fh, fw, h, w) == (64, 288, 192, 504, 336);
+        // 504x336 image may reach the head in either orientation. Both are
+        // a 64-channel feature map at 4/7 of the output dimensions. Other
+        // geometries keep the established materialized route.
+        && is_da3_base_final_resize_shape(feat_half, fh, fw, h, w);
     let resize_started = std::time::Instant::now();
     if final_f4_wino {
         // F(4) is deliberately benchmark-only: it keeps the materialized
@@ -1246,6 +1267,16 @@ mod tests {
         (0..4)
             .map(|_| random_vec(&mut rng, grid * grid * c_in))
             .collect()
+    }
+
+    #[test]
+    fn da3_base_final_resize_gate_accepts_both_image_orientations() {
+        assert!(is_da3_base_final_resize_shape(64, 192, 288, 336, 504));
+        assert!(is_da3_base_final_resize_shape(64, 288, 192, 504, 336));
+
+        assert!(!is_da3_base_final_resize_shape(64, 192, 288, 504, 336));
+        assert!(!is_da3_base_final_resize_shape(32, 192, 288, 336, 504));
+        assert!(!is_da3_base_final_resize_shape(64, 193, 288, 336, 504));
     }
 
     #[test]
