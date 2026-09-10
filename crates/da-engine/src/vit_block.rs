@@ -804,10 +804,13 @@ impl PackedMlpExecutor {
                             strip,
                         ));
                     }
-                    vestra_kernels::scalar::add_bias_rows(
+                    // This already executes inside the owning outer Rayon
+                    // slab.  Calling `scalar::add_bias_rows` here would
+                    // recursively launch its >=32-row Rayon path once per
+                    // hidden strip. Keep the same elementwise arithmetic
+                    // local to this worker instead.
+                    add_bias_rows_owned_worker(
                         &mut hidden,
-                        slab_rows,
-                        STRIP,
                         &layer.fc1_bias[strip * STRIP..(strip + 1) * STRIP],
                     );
                     if let Some(started) = fc1_started {
@@ -862,6 +865,19 @@ impl PackedMlpExecutor {
             );
         }
         output
+    }
+}
+
+/// Serial row bias epilogue for a buffer already exclusively owned by one
+/// outer parallel worker. The operation order for each element is the same as
+/// `scalar::add_bias_rows`; only nested scheduling is removed.
+fn add_bias_rows_owned_worker(values: &mut [f32], bias: &[f32]) {
+    debug_assert!(!bias.is_empty());
+    debug_assert_eq!(values.len() % bias.len(), 0);
+    for row in values.chunks_exact_mut(bias.len()) {
+        for (value, offset) in row.iter_mut().zip(bias) {
+            *value += offset;
+        }
     }
 }
 
@@ -1580,6 +1596,25 @@ pub fn vit_block(
 mod tests {
     use super::*;
     use da_graph::{CpuBackend, Graph};
+
+    #[test]
+    fn owned_worker_bias_matches_scalar_parallel_bias_bitwise() {
+        let mut rng = Xorshift32(0xB1A5_0FF5);
+
+        for rows in [40_usize, 55] {
+            let bias = random_vec(&mut rng, 64);
+            let original = random_vec(&mut rng, rows * bias.len());
+            let mut owned_worker = original.clone();
+            let mut scalar_parallel = original;
+
+            add_bias_rows_owned_worker(&mut owned_worker, &bias);
+            vestra_kernels::scalar::add_bias_rows(&mut scalar_parallel, rows, bias.len(), &bias);
+
+            for (actual, expected) in owned_worker.iter().zip(scalar_parallel) {
+                assert_eq!(actual.to_bits(), expected.to_bits());
+            }
+        }
+    }
 
     #[test]
     fn direct_layernorm_and_linear_match_the_retired_graph_path() {
