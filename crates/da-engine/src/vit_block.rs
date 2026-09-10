@@ -72,6 +72,7 @@
 //! requires everywhere else in `da-graph`.
 use crate::ModelConfig;
 use da_graph::{Backend, Weights};
+use rayon::prelude::*;
 use vestra_kernels::gemm::{Da3ProjectionGemm, Gemm};
 use vestra_kernels::packed_gemm::PreparedLinearF32;
 
@@ -705,26 +706,51 @@ impl MlpExecutor for PackedMlpExecutor {
         );
         assert_eq!(input.len(), rows * 768);
 
-        let mut normalized = input.to_vec();
-        vestra_kernels::scalar::layernorm(
-            &mut normalized,
-            rows,
-            768,
-            &layer.norm_gamma,
-            &layer.norm_beta,
-            self.ln_eps,
-        );
-        let mut hidden = vec![0.0; rows * 3072];
-        assert!(layer.fc1.run_da3_base(&normalized, &mut hidden));
-        vestra_kernels::scalar::add_bias_rows(&mut hidden, rows, 3072, &layer.fc1_bias);
-        vestra_kernels::Kernels::detect().gelu(&mut hidden);
-
         let mut output = vec![0.0; rows * 768];
-        assert!(layer.fc2.run_da3_base(&hidden, &mut output));
-        vestra_kernels::scalar::add_bias_rows(&mut output, rows, 768, &layer.fc2_bias);
-        if let Some(scale) = layer.ls2.as_deref() {
-            vestra_kernels::scalar::layerscale(&mut output, rows, 768, scale);
-        }
+        // One outer Rayon launch owns a small set of rows through LN2, FC1,
+        // GELU, and FC2. This keeps the ~72 KiB normalized and ~72 KiB
+        // hidden activation for each six-row tile local to the worker instead
+        // of materializing full 865-row matrices and launching two separate
+        // projection jobs. The serial inner projection is deliberate: nested
+        // Rayon launches would defeat the cache-local schedule.
+        input
+            .par_chunks(6 * 768)
+            .zip(output.par_chunks_mut(6 * 768))
+            .for_each_init(
+                || (Vec::<f32>::new(), Vec::<f32>::new()),
+                |(normalized, hidden), (input_rows, output_rows)| {
+                    let tile_rows = input_rows.len() / 768;
+                    normalized.clear();
+                    normalized.extend_from_slice(input_rows);
+                    vestra_kernels::scalar::layernorm(
+                        normalized,
+                        tile_rows,
+                        768,
+                        &layer.norm_gamma,
+                        &layer.norm_beta,
+                        self.ln_eps,
+                    );
+                    hidden.resize(tile_rows * 3072, 0.0);
+                    assert!(layer.fc1.run_rows_serial(normalized, hidden));
+                    vestra_kernels::scalar::add_bias_rows(
+                        hidden,
+                        tile_rows,
+                        3072,
+                        &layer.fc1_bias,
+                    );
+                    vestra_kernels::Kernels::detect().gelu(hidden);
+                    assert!(layer.fc2.run_rows_serial(hidden, output_rows));
+                    vestra_kernels::scalar::add_bias_rows(
+                        output_rows,
+                        tile_rows,
+                        768,
+                        &layer.fc2_bias,
+                    );
+                    if let Some(scale) = layer.ls2.as_deref() {
+                        vestra_kernels::scalar::layerscale(output_rows, tile_rows, 768, scale);
+                    }
+                },
+            );
         output
     }
 }
