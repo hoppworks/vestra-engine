@@ -833,6 +833,11 @@ impl PackedMlpExecutor {
 
         let layer = &self.layers[layer_idx];
         let profile = std::env::var_os("DA_STRIP_MLP_PROFILE").is_some();
+        // This remains opt-in until its isolated target-machine admission
+        // proves that retaining four FC2 input strips improves the full
+        // inference. The ordinary one-strip route stays the control path.
+        let group_fc2 = self.validated_serial_panel_path
+            && std::env::var_os("DA3_STRIP_MLP_GROUP_FC2").is_some();
         let fc1_ns = std::sync::atomic::AtomicU64::new(0);
         let gelu_ns = std::sync::atomic::AtomicU64::new(0);
         let fc2_ns = std::sync::atomic::AtomicU64::new(0);
@@ -857,70 +862,97 @@ impl PackedMlpExecutor {
             .zip(output.par_chunks_mut(SLAB_ROWS * EMBED))
             .for_each(|(normalized_slab, output_slab)| {
                 let slab_rows = normalized_slab.len() / EMBED;
-                let mut hidden = vec![0.0; slab_rows * STRIP];
-                for strip in 0..HIDDEN / STRIP {
-                    let fc1_started = profile.then(std::time::Instant::now);
-                    for (input_rows, hidden_rows) in normalized_slab
-                        .chunks(ROW_TILE * EMBED)
-                        .zip(hidden.chunks_mut(ROW_TILE * STRIP))
-                    {
-                        if self.validated_serial_panel_path {
-                            assert!(layer.fc1.run_output_panel_rows_serial_validated(
-                                input_rows,
-                                hidden_rows,
-                                strip,
-                            ));
-                        } else {
-                            assert!(layer.fc1.run_output_panel_rows_serial(
-                                input_rows,
-                                hidden_rows,
-                                strip,
-                            ));
+                let strips_per_group = if group_fc2 { 4 } else { 1 };
+                for first_strip in (0..HIDDEN / STRIP).step_by(strips_per_group) {
+                    let mut hidden = vec![0.0; slab_rows * STRIP * strips_per_group];
+                    for strip_offset in 0..strips_per_group {
+                        let strip = first_strip + strip_offset;
+                        let hidden_offset = strip_offset * slab_rows * STRIP;
+                        let hidden_strip =
+                            &mut hidden[hidden_offset..hidden_offset + slab_rows * STRIP];
+                        let fc1_started = profile.then(std::time::Instant::now);
+                        for (input_rows, hidden_rows) in normalized_slab
+                            .chunks(ROW_TILE * EMBED)
+                            .zip(hidden_strip.chunks_mut(ROW_TILE * STRIP))
+                        {
+                            if self.validated_serial_panel_path {
+                                assert!(layer.fc1.run_output_panel_rows_serial_validated(
+                                    input_rows,
+                                    hidden_rows,
+                                    strip,
+                                ));
+                            } else {
+                                assert!(layer.fc1.run_output_panel_rows_serial(
+                                    input_rows,
+                                    hidden_rows,
+                                    strip,
+                                ));
+                            }
+                        }
+                        add_bias_rows_owned_worker(
+                            hidden_strip,
+                            &layer.fc1_bias[strip * STRIP..(strip + 1) * STRIP],
+                        );
+                        if let Some(started) = fc1_started {
+                            fc1_ns.fetch_add(
+                                started.elapsed().as_nanos() as u64,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                        }
+                        let gelu_started = profile.then(std::time::Instant::now);
+                        vestra_kernels::Kernels::detect().gelu(hidden_strip);
+                        if let Some(started) = gelu_started {
+                            gelu_ns.fetch_add(
+                                started.elapsed().as_nanos() as u64,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
                         }
                     }
-                    // This already executes inside the owning outer Rayon
-                    // slab.  Calling `scalar::add_bias_rows` here would
-                    // recursively launch its >=32-row Rayon path once per
-                    // hidden strip. Keep the same elementwise arithmetic
-                    // local to this worker instead.
-                    add_bias_rows_owned_worker(
-                        &mut hidden,
-                        &layer.fc1_bias[strip * STRIP..(strip + 1) * STRIP],
-                    );
-                    if let Some(started) = fc1_started {
-                        fc1_ns.fetch_add(
-                            started.elapsed().as_nanos() as u64,
-                            std::sync::atomic::Ordering::Relaxed,
-                        );
-                    }
-                    let gelu_started = profile.then(std::time::Instant::now);
-                    // At this strip size the dispatch has one AVX-512 work
-                    // unit, avoiding nested Rayon work while retaining the
-                    // production GELU arithmetic.
-                    vestra_kernels::Kernels::detect().gelu(&mut hidden);
-                    if let Some(started) = gelu_started {
-                        gelu_ns.fetch_add(
-                            started.elapsed().as_nanos() as u64,
-                            std::sync::atomic::Ordering::Relaxed,
-                        );
-                    }
                     let fc2_started = profile.then(std::time::Instant::now);
-                    for (hidden_rows, output_rows) in hidden
-                        .chunks(ROW_TILE * STRIP)
-                        .zip(output_slab.chunks_mut(ROW_TILE * EMBED))
-                    {
-                        if self.validated_serial_panel_path {
-                            assert!(layer.fc2.accumulate_input_panel_rows_serial_validated(
-                                hidden_rows,
-                                output_rows,
-                                strip,
+                    if group_fc2 {
+                        for row0 in (0..slab_rows).step_by(ROW_TILE) {
+                            let tile_rows = (slab_rows - row0).min(ROW_TILE);
+                            let tile_start = row0 * STRIP;
+                            let tile_end = tile_start + tile_rows * STRIP;
+                            let output_start = row0 * EMBED;
+                            let output_end = output_start + tile_rows * EMBED;
+                            assert!(layer.fc2.accumulate_four_input_panel_rows_serial_validated(
+                                [
+                                    &hidden[tile_start..tile_end],
+                                    &hidden[slab_rows * STRIP + tile_start
+                                        ..slab_rows * STRIP + tile_end],
+                                    &hidden[2 * slab_rows * STRIP + tile_start
+                                        ..2 * slab_rows * STRIP + tile_end],
+                                    &hidden[3 * slab_rows * STRIP + tile_start
+                                        ..3 * slab_rows * STRIP + tile_end],
+                                ],
+                                &mut output_slab[output_start..output_end],
+                                [
+                                    first_strip,
+                                    first_strip + 1,
+                                    first_strip + 2,
+                                    first_strip + 3
+                                ],
                             ));
-                        } else {
-                            assert!(layer.fc2.accumulate_input_panel_rows_serial(
-                                hidden_rows,
-                                output_rows,
-                                strip,
-                            ));
+                        }
+                    } else {
+                        for (hidden_rows, output_rows) in hidden
+                            .chunks(ROW_TILE * STRIP)
+                            .zip(output_slab.chunks_mut(ROW_TILE * EMBED))
+                        {
+                            if self.validated_serial_panel_path {
+                                assert!(layer.fc2.accumulate_input_panel_rows_serial_validated(
+                                    hidden_rows,
+                                    output_rows,
+                                    first_strip,
+                                ));
+                            } else {
+                                assert!(layer.fc2.accumulate_input_panel_rows_serial(
+                                    hidden_rows,
+                                    output_rows,
+                                    first_strip,
+                                ));
+                            }
                         }
                     }
                     if let Some(started) = fc2_started {
