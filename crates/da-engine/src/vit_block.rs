@@ -791,25 +791,6 @@ fn run_linear_into(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_linear(
-    x_in: &[f32],
-    m: usize,
-    k: usize,
-    n: usize,
-    w_name: &str,
-    b_name: &str,
-    gelu: bool,
-    ls_name: Option<&str>,
-    weights: &Weights,
-) -> Vec<f32> {
-    let mut out = vec![0.0; m * n];
-    run_linear_into(
-        x_in, m, k, n, w_name, b_name, gelu, ls_name, weights, &mut out,
-    );
-    out
-}
-
 /// Runs the attention sub-block: fused QKV linear -> split/transpose into
 /// per-head layout -> `Op::Attention` (optional qk-norm, optional RoPE,
 /// scaled-dot-product core) -> output projection (+ `ls1` if present). Returns
@@ -1414,7 +1395,8 @@ mod tests {
             .run(&backend, &[&input], &weights)
             .remove(0);
 
-        let direct_linear = run_linear(
+        let mut direct_linear = vec![0.0; 3 * 5];
+        run_linear_into(
             &input,
             3,
             4,
@@ -1424,6 +1406,7 @@ mod tests {
             true,
             Some("linear.ls"),
             &weights,
+            &mut direct_linear,
         );
         let mut linear_graph = Graph::builder();
         let linear_x = linear_graph.input(3 * 4);
