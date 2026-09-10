@@ -72,6 +72,7 @@
 //! requires everywhere else in `da-graph`.
 use crate::ModelConfig;
 use da_graph::{Backend, Weights};
+use rayon::prelude::*;
 use vestra_kernels::gemm::{Da3ProjectionGemm, Gemm};
 use vestra_kernels::packed_gemm::PreparedLinearF32;
 
@@ -96,6 +97,16 @@ pub trait MlpExecutor {
 pub struct PackedMlpExecutor {
     layers: Vec<PackedMlpLayer>,
     ln_eps: f32,
+    execution: PackedMlpExecution,
+}
+
+/// The legacy whole-activation candidate remains useful as a control.  The
+/// hidden-strip route is an independent scheduling experiment: it retains a
+/// 64-neuron FC1 strip only until it has contributed to FC2.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PackedMlpExecution {
+    WholeActivation,
+    HiddenStrip,
 }
 
 struct PackedMlpLayer {
@@ -133,6 +144,11 @@ impl PackedMlpExecutor {
         Some(Self {
             layers,
             ln_eps: cfg.ln_eps,
+            execution: if std::env::var_os("DA3_STRIP_MLP").is_some() {
+                PackedMlpExecution::HiddenStrip
+            } else {
+                PackedMlpExecution::WholeActivation
+            },
         })
     }
 }
@@ -698,6 +714,9 @@ impl MlpExecutor for CudaMlpExecutor {
 
 impl MlpExecutor for PackedMlpExecutor {
     fn run_mlp(&self, layer_idx: usize, input: &[f32], rows: usize) -> Vec<f32> {
+        if self.execution == PackedMlpExecution::HiddenStrip {
+            return self.run_hidden_strip_mlp(layer_idx, input, rows);
+        }
         let layer = &self.layers[layer_idx];
         assert_eq!(
             rows, 865,
@@ -724,6 +743,87 @@ impl MlpExecutor for PackedMlpExecutor {
         vestra_kernels::scalar::add_bias_rows(&mut output, rows, 768, &layer.fc2_bias);
         if let Some(scale) = layer.ls2.as_deref() {
             vestra_kernels::scalar::layerscale(&mut output, rows, 768, scale);
+        }
+        output
+    }
+}
+
+impl PackedMlpExecutor {
+    /// Cache-resident DA3-BASE MLP execution candidate.
+    ///
+    /// Each Rayon item owns a 55-token slab.  It visits FC1's 64-neuron
+    /// panels in ascending order, immediately applies bias/GELU, and folds
+    /// that strip into FC2.  This avoids the 865×3072 intermediate allocation
+    /// and lets the 192 KiB FC1 panel remain hot while the slab's ten small
+    /// row tiles consume it.  FC2 partial sums are loaded/stored between
+    /// strips, so the floating point reductions remain ascending in hidden
+    /// channel order.
+    fn run_hidden_strip_mlp(&self, layer_idx: usize, input: &[f32], rows: usize) -> Vec<f32> {
+        const EMBED: usize = 768;
+        const HIDDEN: usize = 3072;
+        const STRIP: usize = 64;
+        const ROW_TILE: usize = 6;
+        const SLAB_ROWS: usize = 55;
+
+        let layer = &self.layers[layer_idx];
+        assert_eq!(
+            rows, 865,
+            "hidden-strip MLP supports the locked DA3 token shape only"
+        );
+        assert_eq!(input.len(), rows * EMBED);
+
+        let mut normalized = input.to_vec();
+        vestra_kernels::scalar::layernorm(
+            &mut normalized,
+            rows,
+            EMBED,
+            &layer.norm_gamma,
+            &layer.norm_beta,
+            self.ln_eps,
+        );
+        let mut output = vec![0.0; rows * EMBED];
+        normalized
+            .par_chunks(SLAB_ROWS * EMBED)
+            .zip(output.par_chunks_mut(SLAB_ROWS * EMBED))
+            .for_each(|(normalized_slab, output_slab)| {
+                let slab_rows = normalized_slab.len() / EMBED;
+                let mut hidden = vec![0.0; slab_rows * STRIP];
+                for strip in 0..HIDDEN / STRIP {
+                    for (input_rows, hidden_rows) in normalized_slab
+                        .chunks(ROW_TILE * EMBED)
+                        .zip(hidden.chunks_mut(ROW_TILE * STRIP))
+                    {
+                        assert!(layer.fc1.run_output_panel_rows_serial(
+                            input_rows,
+                            hidden_rows,
+                            strip,
+                        ));
+                    }
+                    vestra_kernels::scalar::add_bias_rows(
+                        &mut hidden,
+                        slab_rows,
+                        STRIP,
+                        &layer.fc1_bias[strip * STRIP..(strip + 1) * STRIP],
+                    );
+                    // At this strip size the dispatch has one AVX-512 work
+                    // unit, avoiding nested Rayon work while retaining the
+                    // production GELU arithmetic.
+                    vestra_kernels::Kernels::detect().gelu(&mut hidden);
+                    for (hidden_rows, output_rows) in hidden
+                        .chunks(ROW_TILE * STRIP)
+                        .zip(output_slab.chunks_mut(ROW_TILE * EMBED))
+                    {
+                        assert!(layer.fc2.accumulate_input_panel_rows_serial(
+                            hidden_rows,
+                            output_rows,
+                            strip,
+                        ));
+                    }
+                }
+            });
+        vestra_kernels::scalar::add_bias_rows(&mut output, rows, EMBED, &layer.fc2_bias);
+        if let Some(scale) = layer.ls2.as_deref() {
+            vestra_kernels::scalar::layerscale(&mut output, rows, EMBED, scale);
         }
         output
     }

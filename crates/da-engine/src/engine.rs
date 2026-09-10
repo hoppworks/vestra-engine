@@ -257,10 +257,10 @@ impl Engine {
             cfg.out_layers
         );
         let weights = weights_from_gguf(&f, quant_prefer)?;
-        let packed_mlp = std::env::var_os("DA3_PACKED_MLP")
-            .is_some()
-            .then(|| PackedMlpExecutor::new(&cfg, &weights))
-            .flatten();
+        let packed_mlp = (std::env::var_os("DA3_PACKED_MLP").is_some()
+            || std::env::var_os("DA3_STRIP_MLP").is_some())
+        .then(|| PackedMlpExecutor::new(&cfg, &weights))
+        .flatten();
         Ok(Engine {
             cfg,
             weights,
