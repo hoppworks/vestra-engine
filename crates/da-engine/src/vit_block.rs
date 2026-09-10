@@ -1581,6 +1581,11 @@ mod tests {
             None,
             &mut workspace,
         );
+        let activation_capacities = (
+            workspace.norm.capacity(),
+            workspace.mlp_hidden.capacity(),
+            workspace.branch.capacity(),
+        );
         for buffer in [
             &mut workspace.norm,
             &mut workspace.branch,
@@ -1613,6 +1618,16 @@ mod tests {
             None,
             None,
             &mut workspace,
+        );
+
+        assert_eq!(
+            activation_capacities,
+            (
+                workspace.norm.capacity(),
+                workspace.mlp_hidden.capacity(),
+                workspace.branch.capacity(),
+            ),
+            "fixed-geometry reuse must retain the MLP activation allocations"
         );
 
         for ((expected, first_reuse), second_reuse) in
