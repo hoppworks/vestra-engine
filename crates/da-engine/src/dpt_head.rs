@@ -501,7 +501,7 @@ fn dpt_head_impl(
             grid_h * grid_w
         );
 
-        let x_chw = if std::env::var_os("DA3_FUSE_HEAD_TOKEN_NORM_CHW").is_some() {
+        let x_chw = if std::env::var_os("DA3_DISABLE_FUSE_HEAD_TOKEN_NORM_CHW").is_none() {
             token_major_to_chw_with_optional_layernorm(
                 &feats[s],
                 n_tok,
