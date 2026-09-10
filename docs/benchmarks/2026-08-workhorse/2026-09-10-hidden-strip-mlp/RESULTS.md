@@ -142,6 +142,33 @@ least 2 ms end-to-end reduction or at least 5% reduction in the complete MLP
 phase. This is deliberately a low-single-digit-ms hypothesis, not a claimed
 large kernel win.
 
+### Candidate: snapshot packed-panel dispatch once per executor
+
+**Hypothesis.** Each hidden-strip MLP inference invokes the two public packed
+panel helpers roughly 180,864 times. Their defensive contract checks the
+process environment, CPU ISA and fixed geometry on every call even though all
+three inputs are invariant for an already-constructed executor. Hoisting that
+decision once should reduce dispatch overhead while retaining identical AVX-512
+FMA arithmetic.
+
+**Change.** `vestra-kernels` `7b41e5e` adds validated serial panel entry
+points whose release path contains no environment or ISA lookup. `vestra-engine`
+will select them only with `DA3_STRIP_MLP_HOIST_DISPATCH=1`, and only after
+both FC1 and FC2 report the serial kernel available at executor creation. The
+default and existing hidden-strip paths remain unchanged.
+
+**Verification.** The kernel regression test executes both checked and
+validated FC1-panel and FC2-accumulation routes and requires exact equality.
+`cargo test -p vestra-kernels packed_gemm --lib` passed 4/4 and
+`cargo test -p vestra-engine --lib` passed 72/72. The candidate has no timing
+or C++ parity claim yet; it requires a controlled A/B smoke and then the
+four-image C++ F32 gate before it can enter the composed candidate.
+
+**Predeclared admission.** Retain the flag only if controlled E2E measurement
+shows at least 1 ms reduction or the full MLP phase falls by at least 3%. This
+small threshold reflects a dispatch-overhead hypothesis, not a new GEMM
+algorithm.
+
 ## Decision
 
 Keep the candidate opt-in.  Its next admission gate is an idle-host,

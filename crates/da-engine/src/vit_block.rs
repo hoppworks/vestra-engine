@@ -98,6 +98,7 @@ pub struct PackedMlpExecutor {
     layers: Vec<PackedMlpLayer>,
     ln_eps: f32,
     execution: PackedMlpExecution,
+    validated_serial_panel_path: bool,
 }
 
 /// The legacy whole-activation candidate remains useful as a control.  The
@@ -141,6 +142,16 @@ impl PackedMlpExecutor {
                 ls2: get("ls2"),
             });
         }
+        // The generic panel helpers defensively inspect an environment switch
+        // and CPU ISA on every tiny tile. Those inputs are immutable for an
+        // executor lifetime, so the hidden-strip candidate may snapshot the
+        // decision once when explicitly requested.
+        let validated_serial_panel_path = std::env::var_os("DA3_STRIP_MLP_HOIST_DISPATCH")
+            .is_some()
+            && layers.iter().all(|layer| {
+                layer.fc1.serial_panel_kernel_available()
+                    && layer.fc2.serial_panel_kernel_available()
+            });
         Some(Self {
             layers,
             ln_eps: cfg.ln_eps,
@@ -149,6 +160,7 @@ impl PackedMlpExecutor {
             } else {
                 PackedMlpExecution::WholeActivation
             },
+            validated_serial_panel_path,
         })
     }
 }
@@ -798,11 +810,19 @@ impl PackedMlpExecutor {
                         .chunks(ROW_TILE * EMBED)
                         .zip(hidden.chunks_mut(ROW_TILE * STRIP))
                     {
-                        assert!(layer.fc1.run_output_panel_rows_serial(
-                            input_rows,
-                            hidden_rows,
-                            strip,
-                        ));
+                        if self.validated_serial_panel_path {
+                            assert!(layer.fc1.run_output_panel_rows_serial_validated(
+                                input_rows,
+                                hidden_rows,
+                                strip,
+                            ));
+                        } else {
+                            assert!(layer.fc1.run_output_panel_rows_serial(
+                                input_rows,
+                                hidden_rows,
+                                strip,
+                            ));
+                        }
                     }
                     // This already executes inside the owning outer Rayon
                     // slab.  Calling `scalar::add_bias_rows` here would
@@ -835,11 +855,19 @@ impl PackedMlpExecutor {
                         .chunks(ROW_TILE * STRIP)
                         .zip(output_slab.chunks_mut(ROW_TILE * EMBED))
                     {
-                        assert!(layer.fc2.accumulate_input_panel_rows_serial(
-                            hidden_rows,
-                            output_rows,
-                            strip,
-                        ));
+                        if self.validated_serial_panel_path {
+                            assert!(layer.fc2.accumulate_input_panel_rows_serial_validated(
+                                hidden_rows,
+                                output_rows,
+                                strip,
+                            ));
+                        } else {
+                            assert!(layer.fc2.accumulate_input_panel_rows_serial(
+                                hidden_rows,
+                                output_rows,
+                                strip,
+                            ));
+                        }
                     }
                     if let Some(started) = fc2_started {
                         fc2_ns.fetch_add(
