@@ -85,11 +85,9 @@ use vestra_kernels::conv::{
     conv2d, conv3x3_winograd_f2_prepared, conv3x3_winograd_f2_prepared_relu_input,
     conv3x3_winograd_f2_prepared_resize_align_corners, conv3x3_winograd_f4_prepared,
     conv_transpose2d, conv_transpose2d_oc16_prepared, conv_transpose2d_prepared,
-    conv_transpose_lateral_composed, prepare_composed_transpose_lateral_filter,
     prepare_nonoverlap_transpose_filter, prepare_nonoverlap_transpose_oc16_filter,
     prepare_winograd_f2_filter, prepare_winograd_f4_filter, resize_align_corners_1x1_prepared,
-    ComposedTransposeLateralF32, NonoverlapTransposeF32, NonoverlapTransposeOc16F32,
-    WinogradF2Filter, WinogradF4Filter,
+    NonoverlapTransposeF32, NonoverlapTransposeOc16F32, WinogradF2Filter, WinogradF4Filter,
 };
 use vestra_kernels::gemm::{BlisOrFaerGemm, Gemm};
 use vestra_kernels::packed_gemm::PreparedLinearF32;
@@ -145,7 +143,6 @@ pub struct WinogradFilterCache {
     f4_filters: HashMap<String, WinogradF4Filter>,
     transpose_filters: HashMap<String, NonoverlapTransposeF32>,
     transpose_oc16_filters: HashMap<String, NonoverlapTransposeOc16F32>,
-    composed_stage0_filters: HashMap<String, ComposedTransposeLateralF32>,
     pointwise_filters: HashMap<String, PreparedLinearF32>,
 }
 
@@ -224,28 +221,6 @@ impl WinogradFilterCache {
                     .expect("validated OC16 transposed-convolution shape")
                 }),
         )
-    }
-
-    /// Prepares the only composable DPT reassemble/lateral pair once for the
-    /// lifetime of a loaded model. The caller deliberately gates execution
-    /// behind an opt-in switch until its independent C++ F32 parity and
-    /// workhorse timing studies have admitted it.
-    fn get_or_prepare_composed_stage0(
-        &mut self,
-        weights: &Weights,
-    ) -> &ComposedTransposeLateralF32 {
-        self.composed_stage0_filters
-            .entry("head.resize.0+scratch.layer1_rn".to_owned())
-            .or_insert_with(|| {
-                prepare_composed_transpose_lateral_filter(
-                    get_weight(weights, "head.resize.0.weight"),
-                    get_weight(weights, "head.resize.0.bias"),
-                    get_weight(weights, "head.scratch.layer1_rn.weight"),
-                    DEFAULT_OC[0],
-                    DEFAULT_OC[0],
-                    FUSION_C,
-                )
-            })
     }
 
     /// Packs a DPT OI pointwise filter into the projection kernel's required
@@ -653,10 +628,6 @@ fn dpt_head_impl(
     let stages_started = std::time::Instant::now();
     let mut l: [Vec<f32>; 4] = Default::default();
     let mut l_hw: [(usize, usize); 4] = [(0, 0); 4];
-    // `l[0]` normally owns the large 96-channel reassemble map. The opt-in
-    // composition writes its 128-channel lateral result directly instead,
-    // preserving all other head stages and the public debug snapshots.
-    let mut composed_stage0_lateral: Option<Vec<f32>> = None;
     for s in 0..4 {
         let n_tok = feats[s].len() / c_in;
         assert_eq!(
@@ -718,84 +689,66 @@ fn dpt_head_impl(
                 let rb = get_weight(weights, "head.resize.0.bias");
                 let oh = (grid_h - 1) * 4 + 4;
                 let ow = (grid_w - 1) * 4 + 4;
-                if !capture_debug
-                    && std::env::var_os("DA3_STAGE0_COMPOSED_TRANSPOSE_LATERAL").is_some()
-                {
-                    let mut lateral = overwrite_buffer(workspace, FUSION_C * oh * ow);
-                    let filter = wino_cache.get_or_prepare_composed_stage0(weights);
-                    conv_transpose_lateral_composed(
-                        &projected,
-                        grid_h,
-                        grid_w,
-                        filter,
-                        &mut lateral,
-                    );
-                    recycle_buffer(workspace, projected);
-                    composed_stage0_lateral = Some(lateral);
-                    // The normal stage-0 map has been intentionally elided.
-                    (Vec::new(), oh, ow)
-                } else {
-                    let mut out = overwrite_buffer(workspace, oc[0] * oh * ow);
-                    let transpose_started = std::time::Instant::now();
-                    let used_oc16 = std::env::var_os("DA3_DISABLE_TRANSPOSE_OC16").is_none()
-                        && wino_cache
-                            .get_or_prepare_transpose_oc16(
-                                weights,
-                                "head.resize.0.weight",
-                                oc[0],
-                                oc[0],
-                                4,
-                            )
-                            .is_some_and(|filter| {
-                                conv_transpose2d_oc16_prepared(
-                                    &projected,
-                                    grid_h,
-                                    grid_w,
-                                    filter,
-                                    Some(rb),
-                                    &mut out,
-                                )
-                            });
-                    if !used_oc16 {
-                        let filter = wino_cache.get_or_prepare_transpose(
+                let mut out = overwrite_buffer(workspace, oc[0] * oh * ow);
+                let transpose_started = std::time::Instant::now();
+                let used_oc16 = std::env::var_os("DA3_DISABLE_TRANSPOSE_OC16").is_none()
+                    && wino_cache
+                        .get_or_prepare_transpose_oc16(
                             weights,
                             "head.resize.0.weight",
                             oc[0],
                             oc[0],
                             4,
-                        );
-                        if !conv_transpose2d_prepared(
-                            &projected,
-                            grid_h,
-                            grid_w,
-                            filter,
-                            Some(rb),
-                            &mut out,
-                        ) {
-                            conv_transpose2d(
+                        )
+                        .is_some_and(|filter| {
+                            conv_transpose2d_oc16_prepared(
                                 &projected,
-                                oc[0],
                                 grid_h,
                                 grid_w,
-                                rw,
-                                oc[0],
-                                4,
-                                4,
-                                4,
+                                filter,
                                 Some(rb),
                                 &mut out,
-                            );
-                        }
-                    }
-                    if std::env::var_os("DA_TRANSPOSE_PROFILE").is_some() {
-                        eprintln!(
-                            "phase: transpose stage=0 oc16={used_oc16} elapsed={:.3}ms",
-                            transpose_started.elapsed().as_secs_f64() * 1e3,
+                            )
+                        });
+                if !used_oc16 {
+                    let filter = wino_cache.get_or_prepare_transpose(
+                        weights,
+                        "head.resize.0.weight",
+                        oc[0],
+                        oc[0],
+                        4,
+                    );
+                    if !conv_transpose2d_prepared(
+                        &projected,
+                        grid_h,
+                        grid_w,
+                        filter,
+                        Some(rb),
+                        &mut out,
+                    ) {
+                        conv_transpose2d(
+                            &projected,
+                            oc[0],
+                            grid_h,
+                            grid_w,
+                            rw,
+                            oc[0],
+                            4,
+                            4,
+                            4,
+                            Some(rb),
+                            &mut out,
                         );
                     }
-                    recycle_buffer(workspace, projected);
-                    (out, oh, ow)
                 }
+                if std::env::var_os("DA_TRANSPOSE_PROFILE").is_some() {
+                    eprintln!(
+                        "phase: transpose stage=0 oc16={used_oc16} elapsed={:.3}ms",
+                        transpose_started.elapsed().as_secs_f64() * 1e3,
+                    );
+                }
+                recycle_buffer(workspace, projected);
+                (out, oh, ow)
             }
             1 => {
                 let rw = get_weight(weights, "head.resize.1.weight");
@@ -904,12 +857,6 @@ fn dpt_head_impl(
     let laterals_started = std::time::Instant::now();
     let mut l_rn: [Vec<f32>; 4] = Default::default();
     for s in 0..4 {
-        if s == 0 {
-            if let Some(composed) = composed_stage0_lateral.take() {
-                l_rn[0] = composed;
-                continue;
-            }
-        }
         let (gh, gw) = l_hw[s];
         let w_name = format!("head.scratch.layer{}_rn.weight", s + 1);
         let filter = wino_cache.get_or_prepare(weights, &w_name, oc[s], FUSION_C);
