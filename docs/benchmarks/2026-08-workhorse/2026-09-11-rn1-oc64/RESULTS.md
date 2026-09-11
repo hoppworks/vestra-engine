@@ -1,4 +1,4 @@
-# rn1 F(2) OC64 product candidate — accepted
+# rn1 F(2) OC64 product candidate — rejected after qualification
 
 ## Hypothesis
 
@@ -46,6 +46,22 @@ warm-up plus ten timed iterations. Pair order alternated. Only
 | **Mean** | **164.004** | **159.776** |
 
 OC64 reduced mean trial-median latency by 4.228 ms and won 10/10 pairs. It
-therefore exceeds the predeclared admission threshold (at least 2 ms and at
-least 8/10 wins). It is retained for the next randomized C++/Rust qualification.
+therefore exceeded the smoke-admission threshold and proceeded to the required
+randomized C++/Rust qualification.
 
+## Qualification outcome
+
+The locked ten-trial CPU F32 study on the same Ryzen 9 9950X used the
+`mountains` image and the same model, 504x336 resize and 16-thread budget.
+
+| Runtime | Mean of 10 trial medians (ms) | 95% CI (ms) |
+|---|---:|---:|
+| OC64 Rust candidate | 160.761 | [158.837, 162.684] |
+| C++/ggml | 197.720 | [196.800, 198.640] |
+
+The candidate remains faster than C++, but it is slower than the current
+qualified OC32 Rust baseline (158.713 ms). The short `desk` smoke was not a
+reliable predictor for this full `mountains` study. OC64 is therefore rejected
+and reverted; `DA3_RN1_F2_OC32` remains the accepted production candidate.
+Full per-iteration output is retained at
+`/var/tmp/vestra-oc64-formal-20260911/runner.log` on Workhorse.
