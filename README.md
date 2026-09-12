@@ -5,6 +5,13 @@ reconstruction. It is the optimized neural engine imported by the Vestra
 product repository; scene stitching, TSDF fusion, exports, and the browser
 studio live in Vestra itself.
 
+The engine is a structure-preserving Rust port of, and is benchmarked against,
+[`localai-org/depth-anything.cpp`](https://github.com/localai-org/depth-anything.cpp)
+(C++17/ggml). The Depth Anything 3 model and checkpoints are upstream work by
+ByteDance; ggml is upstream work as well. This repository is not a separate
+"Depth Anything in Rust" project; it is one of three repositories behind the
+single Vestra case study.
+
 ## Scope
 
 - GGUF model loading
@@ -64,35 +71,59 @@ end-to-end performance claim. The executable gates live in
 
 ## Canonical CPU-F32 baseline
 
-The conservative public release result is the durable 20-trial same-machine
-study on an AMD Ryzen 9 9950X, 16 benchmark threads, DA3-BASE F32, and 504×336:
+The current portfolio comparison is a fresh 10-trial same-machine study against
+the public `localai-org/depth-anything.cpp` revision. It uses an AMD Ryzen 9
+9950X, 16 benchmark threads, DA3-BASE F32, and 504×336:
 
 | Runtime | Mean of trial medians | 95% CI |
 |---|---:|---:|
-| Vestra Engine | 171.141 ms | [168.042, 174.241] ms |
-| C++ / ggml | 238.789 ms | [237.406, 240.172] ms |
+| Vestra Engine | 158.126 ms | [156.196, 160.056] ms |
+| C++ / ggml | 197.036 ms | [196.325, 197.748] ms |
 
-That is 28.3% lower latency, or 39.5% higher throughput. It is a single-image
-CPU-F32 result and must not be presented as proof of multi-view, quantized, GPU,
-or complete reconstruction performance. A later 10-trial experimental kernel
-iteration measured 165.751 ms for Rust and 238.647 ms for C++/ggml; that result
-is retained as optimization evidence, not used as the canonical release
-headline. Raw trials and provenance live under
-`docs/benchmarks/2026-08-workhorse/`.
+That is 19.75% lower latency, or 24.61% higher throughput; both percentages
+describe the same run and must not be added. The confidence intervals do not
+overlap. It is a single-image CPU-F32 result (2026-09-11, C++ commit
+`739992d`) and must not be presented as proof of multi-view, quantized, GPU, or
+complete reconstruction performance.
+
+Scope of that number: the Rust arm ran the qualified workhorse configuration,
+meaning the AOCL BLIS bridge plus the documented opt-in kernel switches
+(`DA3_STRIP_MLP`, `DA3_RN1_F2_OC32`, `DA3_STRIP_MLP_HOIST_DISPATCH`,
+`DA3_KERNELS_ENABLE_OUT1_F2_128X64`, `DA3_FUSED_FINAL_RESIZE_ROW_RING`) and an
+OpenMP thread policy. It is not the default `cargo run` build. The trade-off is
+memory: mean per-process peak RSS was 1038.1 MiB for Vestra Engine against
+619.1 MiB for C++/ggml. The Vestra product repository pins an older engine
+revision, so this is an engine measurement, not a property of the product
+binary.
+
+Earlier studies on the same workload are historical evidence, not the
+headline, and must not be combined with it: 2026-08-30, N=20, same C++ build,
+without the extra switches, measured 188.137 ms versus 197.939 ms (4.95% lower
+latency; bundle not published); 2026-08-13, N=20, against an older and slower
+pinned C++ build, measured 171.141 ms versus 238.789 ms (28.3% lower latency).
+Raw trials, executable hashes, fidelity results, and provenance for the current
+number are in the
+[2026-09-11 remeasurement bundle](docs/benchmarks/2026-08-workhorse/2026-09-11-current-f32-rerun/RESULTS.md).
 
 ## Build and test
 
 ```bash
 cargo test --locked --workspace
-cargo run --locked -p vestra-cli -- infer \
+cargo run --release --locked -p vestra-cli --bin vestra-engine -- infer \
   --model /path/to/model.gguf \
   --image /path/to/image.jpg \
-  --output /tmp/depth.pfm
+  --out-depth /tmp/depth.pfm \
+  --out-pose /tmp/pose.json
 ```
 
-Target-hardware release builds use `-C target-cpu=znver5` on the Ryzen 9
-9950X. Benchmark commands and accepted environment switches are documented in
-the benchmark bundle rather than hidden in this README.
+The qualified workhorse benchmark build used `-C target-cpu=znver5` on the
+Ryzen 9 9950X. Benchmark commands and accepted environment switches are
+documented in the benchmark bundle rather than hidden in this README.
+
+The [optimization carry-over audit](docs/audits/2026-08-30-optimization-carryover-audit.md)
+explains why the old optimization branch was not merged wholesale. The
+[whole-repository optimization audit](docs/audits/2026-08-30-code-optimization.md)
+records remaining hypotheses separately from qualified speedups.
 
 ## Repository boundary
 
@@ -126,3 +157,6 @@ be generalized to DA3-LARGE, DA3-GIANT, or Nested checkpoints, whose model
 cards publish different terms. See [NOTICE](NOTICE) and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for pinned sources, affected
 modules, and complete license copies.
+
+Part of Daniel Hopp's portfolio: https://daniel.hoppworks.de/work/vestra/ ·
+https://www.linkedin.com/in/hoppworks

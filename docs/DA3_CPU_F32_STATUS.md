@@ -10,32 +10,54 @@ contract.
 
 ## Canonical public result
 
-The conservative release baseline was generated on 2026-08-13 with twenty
-randomized process trials per arm and ten timed iterations per process:
+The current portfolio remeasurement was generated on 2026-09-11 with ten
+randomized process trials per arm and ten timed iterations per process. The C++
+arm is public `localai-org/depth-anything.cpp` commit
+`739992d10bf9472c46dcd4622b14d2b20766c58d`:
 
-| Arm | Mean of trial medians | 95% CI | Peak RSS |
+| Arm | Mean of trial medians | 95% CI | Mean per-process peak RSS |
 |---|---:|---:|---:|
-| Rust DA3-BASE F32 | 171.141 ms | 168.042–174.241 ms | 804.0 MiB |
-| C++/ggml DA3-BASE F32 | 238.789 ms | 237.406–240.172 ms | 618.2 MiB |
+| Vestra Engine DA3-BASE F32 | 158.126 ms | 156.196–160.056 ms | 1038.1 MiB |
+| Current public C++/ggml F32 | 197.036 ms | 196.325–197.748 ms | 619.1 MiB |
 
-Rust therefore delivers 39.5% higher throughput than this C++/ggml reference.
-Equivalently, its mean latency is 28.3% lower. These two percentage conventions
-must never be mixed.
+Vestra Engine therefore delivers 24.61% higher throughput than this C++/ggml
+reference. Equivalently, its mean latency is 19.75% lower. The confidence
+intervals do not overlap. These two percentage conventions must never be mixed.
 
-### Later exploratory result
+The Rust arm ran the qualified workhorse configuration: the AOCL BLIS bridge
+(`DA3_KERNELS_BLIS_LINEAR`, `DA3_HEAD_BLIS_GEMM`) plus the documented opt-in
+kernel switches `DA3_STRIP_MLP`, `DA3_RN1_F2_OC32`,
+`DA3_STRIP_MLP_HOIST_DISPATCH`, `DA3_KERNELS_ENABLE_OUT1_F2_128X64`, and
+`DA3_FUSED_FINAL_RESIZE_ROW_RING`, with `RAYON_NUM_THREADS=16`,
+`OMP_NUM_THREADS=16`, `OMP_DYNAMIC=FALSE`. The exact switch set is recorded in
+the bundle's `raw-results.json`. This is not the default build, and any public
+statement of the number must carry that scope together with the memory
+trade-off: Vestra Engine used roughly 1.7× the peak RSS of the C++ reference
+(1038.1 MiB versus 619.1 MiB). The 2026-08-30 N=20 study on the same C++ build
+without the five extra switches measured 188.137 ms versus 197.939 ms (4.95%
+lower latency); its bundle is not published.
 
-After the canonical run, iteration 55 evaluated a packed Flash-attention
-candidate with ten randomized process trials per arm:
+### Historical pinned-build results
 
-| Arm | Mean of trial medians | 95% CI | Peak RSS |
+The 2026-08-13 N=20 study measured 171.141 ms for Rust and 238.789 ms for the
+then-pinned C++ build. It is valid historical optimization evidence, but the
+fresh current-public C++ build is materially faster. The older 28.3% lower
+latency / 39.5% higher throughput result is therefore not the current headline.
+
+### Earlier exploratory artifact
+
+An earlier iteration-55 run evaluated a packed Flash-attention candidate with
+ten randomized process trials per arm:
+
+| Arm | Mean of trial medians | 95% CI | Mean per-process peak RSS |
 |---|---:|---:|---:|
 | Rust DA3-BASE F32 | 165.751 ms | 161.038–170.464 ms | 804.1 MiB |
 | C++/ggml DA3-BASE F32 | 238.647 ms | 236.902–240.392 ms | 618.5 MiB |
 
-That later run corresponds to 44.0% higher throughput and 30.5% lower
-latency. It is preserved as serious optimization evidence, but its smaller
-sample and incomplete source-commit capture make it exploratory rather than
-the public release headline.
+That run reported 44.0% higher throughput and 30.5% lower latency. Its raw
+record names the legacy `target/release/da` binary and does not resolve the Rust
+or C++ commits, so source-level attribution is unverified. It is preserved as a
+historical hypothesis only, not as a current candidate or portfolio claim.
 
 ### Hardware and software fingerprint
 
@@ -45,7 +67,7 @@ the public release headline.
 | CPU settings used | 16 benchmark threads; boost enabled; AVX-512 available |
 | Memory | 96 GiB installed (91 GiB reported available to the host) |
 | GPU | NVIDIA GeForce RTX 5080, 16,303 MiB VRAM, driver 610.43.03 |
-| Operating system | Linux 7.1.5-ogc5.1.fc44.x86_64 |
+| Operating system | Linux 7.2.0-ogc6.1.fc44.x86_64 |
 | Rust compiler | rustc 1.97.1 (2026-07-14) |
 | Code generation | `target-cpu=znver5`, release profile, thin LTO, one codegen unit |
 
@@ -54,11 +76,12 @@ The CPU has two L3-cache CCDs and one NUMA node; benchmark trials are not
 claimed to be a universal result for every Ryzen, operating system or CPU
 affinity policy.
 
-The canonical evidence is the
-[N=20 summary](benchmarks/2026-08-workhorse/2026-08-13-revalidation-cpu-f32-blis-n20/RESULTS.md)
-and its
-[raw trials](benchmarks/2026-08-workhorse/2026-08-13-revalidation-cpu-f32-blis-n20/raw-results.json).
-The later candidate has a separate
+The current evidence is the
+[2026-09-11 remeasurement summary](benchmarks/2026-08-workhorse/2026-09-11-current-f32-rerun/RESULTS.md)
+and its [raw trials](benchmarks/2026-08-workhorse/2026-09-11-current-f32-rerun/raw-results.json).
+The historical pinned-build result remains in the
+[2026-08-13 summary](benchmarks/2026-08-workhorse/2026-08-13-revalidation-cpu-f32-blis-n20/RESULTS.md).
+The earlier exploratory artifact has a separate
 [iteration-55 summary](benchmarks/2026-08-workhorse/iteration55-packed-flash/RESULTS.md)
 and [raw trials](benchmarks/2026-08-workhorse/iteration55-packed-flash/raw-results.json).
 Record binary and source-tree hashes alongside any future rerun before
@@ -73,10 +96,10 @@ is Pearson r ≥ 0.9999 and MAE ≤ 0.005 on every image.
 
 | Image | Pearson r | MAE |
 |---|---:|---:|
-| canyon | 0.999993628 | 0.001812542 |
-| desk | 0.999978257 | 0.001772926 |
-| mountains | 0.999985578 | 0.003675167 |
-| street | 0.999972124 | 0.000821043 |
+| canyon | 0.999993628 | 0.001812497 |
+| desk | 0.999978257 | 0.001772807 |
+| mountains | 0.999985579 | 0.003674961 |
+| street | 0.999972125 | 0.000820998 |
 
 All four pass. This is implementation fidelity, not a depth-accuracy claim
 against ground truth.
@@ -166,40 +189,47 @@ The workhorse build uses the DA3 BLIS bridge and a Zen 5 code-generation
 target:
 
 ```bash
-cd /var/roothome/da3-bench/depth-anything-rs
-export LD_LIBRARY_PATH=/tmp/da3-blis-install/lib:/tmp/da3-clang64/usr/lib64
-RUSTFLAGS="--cfg da3_blis -L native=/tmp/da3-blis-install/lib -C target-cpu=znver5" \
-  cargo build --release -p da-cli
+cd /var/roothome/da3-current-upstream-739992d/depth-anything-rs
+export LD_LIBRARY_PATH=/var/roothome/da3-blis-install-9212/lib:/var/roothome/clang22-root/usr/lib64
+RUSTFLAGS="--cfg da3_blis -L native=/var/roothome/da3-blis-install-9212/lib \
+  -C target-cpu=znver5 -C linker=gcc -C link-arg=-fuse-ld=bfd" \
+  cargo build --locked --release -p vestra-cli --bin vestra-engine
 ```
 
 The fair study is then:
 
 ```bash
 env \
-  LD_LIBRARY_PATH=/tmp/da3-blis-install/lib:/tmp/da3-clang64/usr/lib64 \
+  LD_LIBRARY_PATH=/var/roothome/da3-blis-install-9212/lib:/var/roothome/clang22-root/usr/lib64 \
   DA3_KERNELS_BLIS_LINEAR=1 \
   DA3_HEAD_BLIS_GEMM=1 \
-  DA3_BENCH_ROOT=/var/roothome/da3-bench \
-  DA3_BENCH_IMAGE=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg \
+  DA3_BENCH_ROOT=/var/roothome/da3-current-upstream-739992d \
+  DA3_RUST_BIN=/var/roothome/da3-current-upstream-739992d/depth-anything-rs/target/release/vestra-engine \
+  DA3_BENCH_IMAGE=/var/roothome/da3-current-upstream-739992d/assets/samples/mountains.jpg \
   RAYON_NUM_THREADS=16 \
-  RUSTFLAGS="--cfg da3_blis -L native=/tmp/da3-blis-install/lib -C target-cpu=znver5" \
+  RUSTFLAGS="--cfg da3_blis -L native=/var/roothome/da3-blis-install-9212/lib -C target-cpu=znver5 -C linker=gcc -C link-arg=-fuse-ld=bfd" \
   python3 scripts/run_scientific_benchmark.py \
     --cpu-f32-direct --trials 20 --repeat 10 --threads 16 --cooldown 3 \
-    --seed 20260812 --output /tmp/da3-cpu-f32-<label>
+    --seed 20260812 --output /tmp/vestra-current-cpp-<label>
 ```
 
 Run the four-image PFM gate before accepting a candidate. The C++ F32 output is
 the reference; compare one output per canyon, desk, mountains and street. The
 benchmark contract gives the exact scope, statistics and exclusions. A
-10-trial run remains suitable for candidate evaluation, but only the N=20
-revalidation is the canonical public number.
+10-trial run is suitable for candidate evaluation. The public headline is the
+2026-09-11 ten-trial remeasurement with its full provenance (source revisions,
+binary hashes, runtime switches, peak RSS); an N=20 revalidation of that exact
+configuration is desirable but optional, and a candidate never replaces the
+headline without the same provenance.
 
 ## Safe next steps
 
-If performance work resumes, begin by reproducing the 171.141 ms canonical
-bundle on an idle host, preserving the same model, input, thread budget and
-timed boundary. Then revalidate the 165.751 ms iteration-55 candidate at N=20
-before considering a headline update.
+If performance work resumes, begin by reproducing the 2026-09-11 current
+remeasurement on an idle host, preserving the same source revisions, binaries,
+model, input, thread budget, and timed boundary. Do not optimize against the older
+239 ms C++ baseline. The packed-Flash hypothesis from iteration 55 must first
+be recreated from identified current source and binary revisions; only then
+may it be revalidated at N=20 against a fresh current-public C++ build.
 
 Only then choose a new experiment from a profile. The most plausible remaining
 area is online Flash softmax/accumulator work, but its upside is unproven and

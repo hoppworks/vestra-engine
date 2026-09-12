@@ -131,12 +131,15 @@ cargo bench -p da-kernels --bench gemm_bench
 bash scripts/gen_baseline.sh
 
 # Rust-CLI bauen und E2E-Latenz gegen die C++-CLI vergleichen (Task 22's Tooling)
-cargo build --release -p da-cli
-bash scripts/compare_e2e.sh --model ../models/depth-anything-base-f32.gguf --image <ein-testbild.png>
+cargo build --locked --release -p vestra-cli --bin vestra-engine
+bash scripts/compare_e2e.sh --cpp-root <depth-anything.cpp-checkout> \
+  --model <depth-anything.cpp-checkout>/models/depth-anything-base-f32.gguf \
+  --image <ein-testbild.png> --threads 16
 ```
 
-`compare_e2e.sh` erwartet die C++-Binary unter `../build/examples/cli/da3-cli` (oder
-`../build/da3-cli` — beide Pfade werden probiert).
+`compare_e2e.sh` erwartet die C++-Binary im explizit angegebenen Checkout unter
+`build/examples/cli/da3-cli` oder `build/da3-cli`. Publizierbare Messungen laufen
+stattdessen über `scripts/run_scientific_benchmark.py`.
 
 ## 8. Weiter optimieren — Zwei-Iterationen-Regel
 

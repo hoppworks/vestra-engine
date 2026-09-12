@@ -21,7 +21,7 @@ because they require engine-owned parity fixtures.
 ## Local development
 
 Vestra Engine declares `vestra-kernels` at exact Git revision
-`1ad85305de14ea76ddd878af6dac80f19bdf2bc3`, also recorded in `Cargo.lock`.
+`d3a9b8b`, also recorded in `Cargo.lock`.
 Contributors changing both repositories may use an uncommitted local Cargo
 source override to a sibling checkout. This is intentionally the only local
 override; it must be removed before qualification so release builds resolve the
@@ -37,4 +37,5 @@ release setting, not a source-code fallback.
 The committed local pair was fresh-cloned into sibling directories and checked
 successfully at engine `0c65739` and kernel `b35a917`. That validates the
 documented local-development topology without relying on the original working
-trees.
+trees. Those commits describe the original split validation, not the current
+dependency pin above.

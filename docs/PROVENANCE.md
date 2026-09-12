@@ -20,9 +20,13 @@ contained verified but uncommitted optimization work, so the new repository
 first records that exact source snapshot before applying the Vestra naming and
 multi-view changes.
 
-The authoritative CPU-F32 benchmark artifacts are retained under
-`docs/benchmarks/2026-08-workhorse/`. They identify the Ryzen 9 9950X workload,
-binary hashes, model and image hashes, raw trials, and confidence intervals.
+The current public CPU-F32 comparison is the
+[2026-09-11 remeasurement](benchmarks/2026-08-workhorse/2026-09-11-current-f32-rerun/RESULTS.md).
+Historical benchmark artifacts remain under
+`docs/benchmarks/2026-08-workhorse/`. Each dated bundle identifies its source
+revisions, Ryzen 9 9950X workload, binary hashes, model and image hashes, raw
+trials, and confidence intervals; results from different bundles must not be
+combined into a new claim.
 
 ## Dependency boundary
 

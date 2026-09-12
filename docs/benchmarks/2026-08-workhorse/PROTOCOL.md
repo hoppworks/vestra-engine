@@ -1,5 +1,10 @@
 # Benchmark protocol
 
+> Historical protocol: this file records the original pinned study against C++
+> commit `2028b47`. The current comparison, with the same timed workload against
+> public C++ commit `739992d`, is documented in
+> [`2026-09-11-current-f32-rerun/RESULTS.md`](2026-09-11-current-f32-rerun/RESULTS.md).
+
 ## Research question
 
 How do the official PyTorch implementation, the optimized C++/ggml port and
@@ -67,6 +72,10 @@ The full randomized order, commands and every raw sample are retained in
 python depth-anything-rs/scripts/run_scientific_benchmark.py \
   --trials 10 --repeat 10 --threads 16 --cooldown 3 --seed 20260812
 ```
+
+For the split repositories, invoke the runner from Vestra Engine and identify
+the C++ checkout explicitly with `DA3_BENCH_ROOT`; the runner refuses missing
+or stale-named binaries.
 
 ## Fidelity protocol
 
