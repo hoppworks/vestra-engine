@@ -1756,7 +1756,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "rayon",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "vestra-gguf",
  "vestra-graph",
  "vestra-kernels",
@@ -1769,7 +1769,7 @@ version = "0.1.0"
 dependencies = [
  "half",
  "memmap2",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -1798,7 +1798,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "vestra-gguf",
 ]
 
