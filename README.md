@@ -158,5 +158,5 @@ cards publish different terms. See [NOTICE](NOTICE) and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for pinned sources, affected
 modules, and complete license copies.
 
-Part of Daniel Hopp's portfolio: https://daniel.hoppworks.de/work/vestra/ ·
+Part of Daniel Hopp's portfolio: https://hoppworks.de/work/vestra/ ·
 https://www.linkedin.com/in/hoppworks
